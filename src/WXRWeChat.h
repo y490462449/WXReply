@@ -11,6 +11,9 @@ typedef void (^WXRMessageHandler)(id wrap);
 /// 记录自身身份、探测服务是否可用（可重复调用，内部有缓存与重试）
 + (void)start;
 
+/// 收消息回调的接收者就是真实的（没被包装的）消息服务实例，收到消息时记下来
++ (void)rememberMessageManager:(id)manager;
+
 /// 取微信内部服务对象（等价于 [MMServiceCenter getService:]）
 + (id)serviceForClass:(NSString *)className;
 + (id)messageManager;

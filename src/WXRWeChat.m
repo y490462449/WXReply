@@ -182,6 +182,40 @@ static NSArray<NSString *> *WXRTimeKeys(void) {
     WXRLog(@"[bridge] 自己 = %@(%@)", self.selfDisplayName ?: @"?", self.selfUserName ?: @"?");
 }
 
+// 微信的 MMServiceCenter 返回的常常不是服务本身，而是包装代理 MMServiceWrapper：
+// 方法不在它身上实现，而是转发给真实服务。于是 respondsToSelector: 会说 NO，
+// 但直接调用其实是通的。这里尽量把里面的真实对象拆出来。
+static id WXRUnwrapService(id service) {
+    if (!service) {
+        return nil;
+    }
+    NSString *className = NSStringFromClass(object_getClass(service));
+    if (![className containsString:@"Wrapper"] && ![className containsString:@"Proxy"]) {
+        return service;
+    }
+    // 1) 让代理自己告诉我们它转发给谁
+    for (NSString *probe in @[@"AsyncSendMsg:", @"SendMsg:", @"AsyncOnAddMsg:MsgWrap:", @"SendMsg:MsgWrap:"]) {
+        id target = WXRCall1(service, @"forwardingTargetForSelector:", NSSelectorFromString(probe));
+        if (target && target != service) {
+            WXRLog(@"[bridge] %@ 转发给 %@", className, NSStringFromClass(object_getClass(target)));
+            return target;
+        }
+    }
+    // 2) 常见字段名
+    id inner = WXRValueAny(service, @[@"m_service", @"m_target", @"m_obj", @"m_wrappedService",
+                                      @"service", @"target", @"m_delegate", @"m_realService"]);
+    if (inner && inner != service) {
+        WXRLog(@"[bridge] 从 %@ 里拆出 %@", className, NSStringFromClass(object_getClass(inner)));
+        return inner;
+    }
+    WXRLog(@"[bridge] %@ 拆不开，先原样使用。它的字段：\n%@",
+           className, [WXRWeChat describeObject:service maxLength:600]);
+    return service;
+}
+
+// 收消息回调的 self 就是真实消息服务实例（不经过代理），这是最可靠的获取方式
+static id gObservedMessageManager = nil;
+
 + (id)serviceForClass:(NSString *)className {
     WXRWeChat *b = [self shared];
     if (!className.length) return nil;
@@ -210,16 +244,37 @@ static NSArray<NSString *> *WXRTimeKeys(void) {
         }
     }
     if (service) {
+        service = WXRUnwrapService(service);
         @synchronized (b.serviceCache) {
             b.serviceCache[className] = service;
         }
-        WXRLog(@"[bridge] 取到服务 %@", className);
+        WXRLog(@"[bridge] 取到服务 %@（实际对象 %@）", className,
+               NSStringFromClass(object_getClass(service)));
     }
     return service;
 }
 
++ (void)rememberMessageManager:(id)manager {
+    if (!manager) {
+        return;
+    }
+    @synchronized ([self class]) {
+        if (gObservedMessageManager != manager) {
+            gObservedMessageManager = manager;
+            WXRLog(@"[bridge] 记下真实消息服务 = %@（来自收消息回调）",
+                   NSStringFromClass(object_getClass(manager)));
+        }
+    }
+}
+
 + (id)messageManager {
     WXRWeChat *b = [self shared];
+    // 收消息回调里抓到的实例优先：它是真实服务，不是 MMServiceWrapper
+    @synchronized ([self class]) {
+        if (gObservedMessageManager) {
+            return gObservedMessageManager;
+        }
+    }
     @synchronized (b.serviceCache) {
         id cached = b.serviceCache[@"__messageManager"];
         if (cached && cached != [NSNull null]) {
@@ -489,6 +544,13 @@ static id WXRMakeOutgoingTextWrap(NSString *text, NSString *session, NSString *f
     return wrap;
 }
 
+// 服务代理（MMServiceWrapper）方法不在自己身上，而是转发给真实服务，
+// 所以 respondsToSelector: 会说 NO，但直接调用是通的。
+static BOOL WXRIsForwardingProxy(id object) {
+    NSString *className = NSStringFromClass(object_getClass(object));
+    return [className containsString:@"Wrapper"] || [className containsString:@"Proxy"];
+}
+
 + (BOOL)trySendTextVia:(NSArray<NSString *> *)selectors
                manager:(id)manager
                   text:(NSString *)text
@@ -497,7 +559,7 @@ static id WXRMakeOutgoingTextWrap(NSString *text, NSString *session, NSString *f
         if (WXRSelectorArity(selector) != 2) {
             continue;
         }
-        if (![manager respondsToSelector:NSSelectorFromString(selector)]) {
+        if (![manager respondsToSelector:NSSelectorFromString(selector)] && !WXRIsForwardingProxy(manager)) {
             continue;
         }
         BOOL contentFirst = WXRSelectorTakesContentFirst(selector);
@@ -518,7 +580,7 @@ static id WXRMakeOutgoingTextWrap(NSString *text, NSString *session, NSString *f
         return NO;
     }
     for (NSString *selector in selectors) {
-        if (![manager respondsToSelector:NSSelectorFromString(selector)]) {
+        if (![manager respondsToSelector:NSSelectorFromString(selector)] && !WXRIsForwardingProxy(manager)) {
             continue;
         }
         NSUInteger arity = WXRSelectorArity(selector);
@@ -545,6 +607,8 @@ static id WXRMakeOutgoingTextWrap(NSString *text, NSString *session, NSString *f
         WXRLog(@"[send] 没有消息服务，发不出去");
         return NO;
     }
+    WXRLog(@"[send] 消息服务对象 = %@%@", NSStringFromClass(object_getClass(manager)),
+           WXRIsForwardingProxy(manager) ? @"（是转发代理，可能藏在它后面）" : @"");
 
     // 自动发现：不再依赖硬编码名单，直接看这个微信版本里到底有哪些"像发消息"的方法
     NSMutableArray<NSString *> *discoveredText = [NSMutableArray array];
@@ -609,7 +673,10 @@ static id WXRMakeOutgoingTextWrap(NSString *text, NSString *session, NSString *f
     [described sortUsingSelector:@selector(compare:)];
     WXRLog(@"[send] %@ 上含 send 的实例方法（名字(参数个数)）：%@",
            NSStringFromClass(object_getClass(manager)),
-           [described componentsJoinedByString:@", "]);
+           described.count ? [described componentsJoinedByString:@", "] : @"（一个都没有）");
+    if (!described.count) {
+        WXRLog(@"[send] 这个对象里包了什么：\n%@", [[self class] describeObject:manager maxLength:800]);
+    }
 }
 
 /* ---------------- 收消息 ---------------- */
@@ -641,6 +708,7 @@ static id WXRMakeOutgoingTextWrap(NSString *text, NSString *session, NSString *f
 static void (*gOrig2)(id, SEL, id, id) = NULL;
 static void WXROnAddMsg2(id self, SEL _cmd, id a1, id a2) {
     if (gOrig2) gOrig2(self, _cmd, a1, a2);
+    [WXRWeChat rememberMessageManager:self];
     // 绝大多数版本 MsgWrap 是第 2 个参数
     dispatch_async(dispatch_get_main_queue(), ^{
         [WXRWeChat handleRawWrap:a2];
@@ -649,6 +717,7 @@ static void WXROnAddMsg2(id self, SEL _cmd, id a1, id a2) {
 static void (*gOrig3)(id, SEL, id, id, id) = NULL;
 static void WXROnAddMsg3(id self, SEL _cmd, id a1, id a2, id a3) {
     if (gOrig3) gOrig3(self, _cmd, a1, a2, a3);
+    [WXRWeChat rememberMessageManager:self];
     dispatch_async(dispatch_get_main_queue(), ^{
         [WXRWeChat handleRawWrap:a2];
     });
