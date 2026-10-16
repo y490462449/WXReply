@@ -67,6 +67,74 @@ def block_parameter_names(code):
     return names
 
 
+# 方法声明行（行首的 + / -），用来区分类方法与实例方法
+SIGNED_METHOD_LINE = re.compile(r"(?m)^\s*([+-])\s*\(([^)]*)\)\s*([^;{\n]*)")
+
+
+def collect_signed_methods(text):
+    """粗略收集 + / - 方法名：够用来判断"在类方法里发了实例方法"这类错误。"""
+    plus, minus = set(), set()
+    for match in SIGNED_METHOD_LINE.finditer(text):
+        sign = match.group(1)
+        rest = match.group(3)
+        labels = re.findall(r"([A-Za-z_]\w*)\s*:", rest)
+        if labels:
+            selector = "".join(label + ":" for label in labels)
+        else:
+            identifiers = re.findall(r"[A-Za-z_]\w*", rest)
+            if not identifiers:
+                continue
+            selector = identifiers[0]
+        (plus if sign == "+" else minus).add(selector)
+    return plus, minus
+
+
+def collect_class_methods(text):
+    """{类名: (类方法集合, 实例方法集合)}，@interface 与 @implementation 都算。"""
+    result = {}
+    for match in re.finditer(r"@(?:interface|implementation)\s+(WXR\w+)", text):
+        cls = match.group(1)
+        end = text.find("@end", match.end())
+        block = text[match.end(): end if end > 0 else len(text)]
+        plus, minus = collect_signed_methods(block)
+        entry = result.setdefault(cls, (set(), set()))
+        entry[0].update(plus)
+        entry[1].update(minus)
+    return result
+
+
+def class_method_receiver_issues(path, code, plus_by_class, minus_by_class):
+    """在 + 方法里给 self / 类对象发实例方法 —— 编译报 no known class method for selector。
+
+    真机上就是这么挂的：sendText:（类方法）里写了 [self logSendDiagnostics]，
+    而它是 - (void)logSendDiagnostics。
+    """
+    issues = []
+    for impl in re.finditer(r"@implementation\s+(WXR\w+)", code):
+        cls = impl.group(1)
+        end = code.find("@end", impl.end())
+        block = code[impl.end(): end if end > 0 else len(code)]
+        plus_methods = plus_by_class.get(cls, set())
+        minus_methods = minus_by_class.get(cls, set())
+        if not minus_methods:
+            continue
+        receiver = re.compile(r"\[\s*(?:self|" + re.escape(cls) + r")\s+([A-Za-z_]\w*)\s*\]")
+        current_kind = None
+        for line in block.split("\n"):
+            head = re.match(r"\s*([+-])\s*\(", line)
+            if head:
+                current_kind = head.group(1)
+            if current_kind != "+":
+                continue
+            for match in receiver.finditer(line):
+                selector = match.group(1)
+                if selector in minus_methods and selector not in plus_methods:
+                    issues.append(
+                        f"{path.name}: {cls} 的 + 方法里给 self 发了实例方法 {selector}"
+                        f"（编译报 no known class method）")
+    return issues
+
+
 def collect_properties(text):
     """从 @interface 块里收集 @property 名字（按类分组）。
 
@@ -601,6 +669,14 @@ def main():
         for match in re.finditer(r"@interface\s+(WXR\w+)\s*:\s*(\w+)", codes[path]):
             superclasses[match.group(1)] = match.group(2)
 
+    # 类 → 类方法 / 实例方法（判断"在 + 方法里发实例方法"这种编译错误）
+    plus_by_class = {}
+    minus_by_class = {}
+    for path in headers + sources:
+        for cls, (plus_methods, minus_methods) in collect_class_methods(codes[path]).items():
+            plus_by_class.setdefault(cls, set()).update(plus_methods)
+            minus_by_class.setdefault(cls, set()).update(minus_methods)
+
     scanned_messages = 0
     for path in sources:
         code = codes[path]
@@ -610,6 +686,7 @@ def main():
         issues += c_call_arity_issues(path, code, arity_table, definition_offsets)
         issues += singleton_dot_issues(path, code, declared, properties_by_class)
         issues += typed_dot_variable_issues(path, code, declared, properties_by_class, superclasses)
+        issues += class_method_receiver_issues(path, code, plus_by_class, minus_by_class)
         for receiver, selector, arity, offset in scan_message_sends(code, own_classes):
             if receiver in ("self", "super"):
                 continue

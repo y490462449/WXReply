@@ -590,7 +590,7 @@ static id WXRMakeOutgoingTextWrap(NSString *text, NSString *session, NSString *f
         return YES;
     }
 
-    [self logSendDiagnostics];
+    [[self shared] logSendDiagnostics];
     return NO;
 }
 
