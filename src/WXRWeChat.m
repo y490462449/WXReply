@@ -255,6 +255,13 @@ static id gObservedMessageManager = nil;
     return service;
 }
 
++ (NSArray<NSString *> *)selectorsOfClassNamed:(NSString *)className {
+    if (!className.length) {
+        return @[];
+    }
+    return WXRSelectorsOfClass(objc_getClass(className.UTF8String));
+}
+
 + (void)rememberMessageManager:(id)manager {
     if (!manager) {
         return;

@@ -84,7 +84,7 @@ static void WXRProbeNoteCall(NSString *selector, id a1, id a2, BOOL hasSecond) {
         // 出站消息的真实字段，是我们构造 wrap 的唯一参照（少了字段就会"一直转圈发不出去"）
         id wrap = secondOutgoing ? a2 : a1;
         WXRLog(@"[probe] 出站消息的完整字段（照这个构造）：\n%@",
-               [WXRWeChat describeObject:wrap maxLength:2000]);
+               [WXRWeChat describeObject:wrap maxLength:5000]);
     } else {
         WXRLogVerbose(@"[probe] %@ 被调用（a1=%@）", selector, WXRBriefArg(a1));
     }
@@ -138,7 +138,139 @@ static void WXRProbeAddLocal4(id self, SEL _cmd, id a1, id a2, id a3, id a4) {
     }
 }
 
+/* ---------------- 广谱探针：找出"插入之后到底谁负责上传" ---------------- */
+
+static NSMutableDictionary<NSString *, NSValue *> *gBroadOriginals = nil;
+static NSMutableSet<NSString *> *gBroadHooked = nil;
+
+static void WXRBroadNote(SEL _cmd, NSArray<NSString *> *args) {
+    NSString *selector = NSStringFromSelector(_cmd);
+    if (gOurCallInProgress) {
+        WXRLogVerbose(@"[probe] 我们自己调用了 %@", selector);
+        return;
+    }
+    NSString *lower = selector.lowercaseString;
+    NSString *line = [NSString stringWithFormat:@"微信调用了 %@（%@）", selector,
+                      args.count ? [args componentsJoinedByString:@", "] : @"无参数"];
+    if ([lower containsString:@"send"] || [lower containsString:@"upload"]) {
+        WXRLog(@"[probe] %@", line);
+    } else {
+        WXRLogVerbose(@"[probe] %@", line);
+    }
+}
+
+static IMP WXRBroadOriginal(SEL _cmd) {
+    NSValue *value = nil;
+    @synchronized (gBroadOriginals) {
+        value = gBroadOriginals[NSStringFromSelector(_cmd)];
+    }
+    return value ? (IMP)[value pointerValue] : NULL;
+}
+
+static void WXRBroadCall0(id self, SEL _cmd) {
+    WXRBroadNote(_cmd, @[]);
+    IMP original = WXRBroadOriginal(_cmd);
+    if (original) {
+        ((void (*)(id, SEL))original)(self, _cmd);
+    }
+}
+
+static void WXRBroadCall1(id self, SEL _cmd, id a1) {
+    WXRBroadNote(_cmd, @[WXRBriefArg(a1)]);
+    IMP original = WXRBroadOriginal(_cmd);
+    if (original) {
+        ((void (*)(id, SEL, id))original)(self, _cmd, a1);
+    }
+}
+
+static void WXRBroadCall2(id self, SEL _cmd, id a1, id a2) {
+    WXRBroadNote(_cmd, @[WXRBriefArg(a1), WXRBriefArg(a2)]);
+    IMP original = WXRBroadOriginal(_cmd);
+    if (original) {
+        ((void (*)(id, SEL, id, id))original)(self, _cmd, a1, a2);
+    }
+}
+
+static void WXRBroadCall3(id self, SEL _cmd, id a1, id a2, id a3) {
+    WXRBroadNote(_cmd, @[WXRBriefArg(a1), WXRBriefArg(a2), WXRBriefArg(a3)]);
+    IMP original = WXRBroadOriginal(_cmd);
+    if (original) {
+        ((void (*)(id, SEL, id, id, id))original)(self, _cmd, a1, a2, a3);
+    }
+}
+
 @implementation WXRSendProbe
+
++ (void)installBroadProbes {
+    gBroadOriginals = [NSMutableDictionary dictionary];
+    gBroadHooked = [NSMutableSet set];
+
+    NSMutableSet<NSString *> *alreadyHooked = [NSMutableSet set];
+    for (WXRHookRecord *record in [WXRHook records]) {
+        if (record.attached && record.selector.length) {
+            [alreadyHooked addObject:[NSString stringWithFormat:@"%@-%@",
+                                      record.className ?: @"", record.selector]];
+        }
+    }
+
+    NSArray<NSString *> *classNames = @[@"CMessageMgr", @"BaseMsgContentViewController",
+                                        @"MMMsgContentViewController", @"ChatRoomViewController",
+                                        @"MMInputToolView", @"ChatInputToolView", @"BaseChatViewController"];
+    NSInteger hooked = 0;
+    for (NSString *className in classNames) {
+        Class cls = objc_getClass(className.UTF8String);
+        if (!cls) {
+            continue;
+        }
+        for (NSString *selector in [WXRWeChat selectorsOfClassNamed:className]) {
+            NSString *lower = selector.lowercaseString;
+            if (!([lower containsString:@"send"] || [lower containsString:@"upload"] ||
+                  [lower containsString:@"sync"] || [lower containsString:@"push"] ||
+                  [lower containsString:@"post"])) {
+                continue;
+            }
+            if ([alreadyHooked containsObject:[NSString stringWithFormat:@"%@-%@", className, selector]]) {
+                continue;
+            }
+            SEL sel = NSSelectorFromString(selector);
+            NSMethodSignature *signature = [cls instanceMethodSignatureForSelector:sel];
+            if (!signature) {
+                continue;
+            }
+            NSInteger count = (NSInteger)signature.numberOfArguments - 2;   // 去掉 self / _cmd
+            if (count < 0 || count > 3) {
+                continue;
+            }
+            BOOL allObjects = YES;
+            for (NSInteger i = 2; i < (NSInteger)signature.numberOfArguments; i++) {
+                const char *type = [signature getArgumentTypeAtIndex:(NSUInteger)i];
+                if (!type || type[0] != '@') {
+                    allObjects = NO;      // 参数里有标量：用对象 trampoline 会 ABI 错位，宁可不挂
+                    break;
+                }
+            }
+            if (!allObjects) {
+                continue;
+            }
+            IMP replacement = (count == 0) ? (IMP)WXRBroadCall0 :
+                              (count == 1) ? (IMP)WXRBroadCall1 :
+                              (count == 2) ? (IMP)WXRBroadCall2 : (IMP)WXRBroadCall3;
+            IMP originalOut = NULL;
+            if ([WXRHook hookClass:className selector:selector isClassMethod:NO
+                       replacement:replacement original:&originalOut
+                              note:@"发送路径广谱探针"]) {
+                if (originalOut) {
+                    @synchronized (gBroadOriginals) {
+                        gBroadOriginals[selector] = [NSValue valueWithPointer:(void *)originalOut];
+                    }
+                }
+                [gBroadHooked addObject:[NSString stringWithFormat:@"%@-%@", className, selector]];
+                hooked++;
+            }
+        }
+    }
+    WXRLog(@"[probe] 广谱发送探针挂了 %ld 个方法：你在微信里手动发一条消息，就能看到完整调用序列", (long)hooked);
+}
 
 + (void)install {
     if (gProbeInstalled) {
@@ -173,6 +305,7 @@ static void WXRProbeAddLocal4(id self, SEL _cmd, id a1, id a2, id a3, id a4) {
                      note:@"出站消息插入(AddLocalMsg 4 参数)"];
 
     WXRLog(@"[probe] 发送路径探针已安装：在微信里手动发一条消息，就能看出微信自己用的是哪个方法");
+    [self installBroadProbes];
 }
 
 + (void)beginOurCall {

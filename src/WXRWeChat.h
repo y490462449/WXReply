@@ -14,6 +14,9 @@ typedef void (^WXRMessageHandler)(id wrap);
 /// 收消息回调的接收者就是真实的（没被包装的）消息服务实例，收到消息时记下来
 + (void)rememberMessageManager:(id)manager;
 
+/// 列出某个类的实例方法名（含父类链）；类不存在时返回空数组
++ (NSArray<NSString *> *)selectorsOfClassNamed:(NSString *)className;
+
 /// 取微信内部服务对象（等价于 [MMServiceCenter getService:]）
 + (id)serviceForClass:(NSString *)className;
 + (id)messageManager;
