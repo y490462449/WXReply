@@ -12,6 +12,7 @@
 #import "WXRWeChat.h"
 #import "WXRAutoReply.h"
 #import "WXRSettingsEntry.h"
+#import "WXRSendProbe.h"
 
 static NSInteger gHookRetry = 0;
 
@@ -42,6 +43,7 @@ __attribute__((constructor)) static void WXRBoot(void) {
 
             [WXRPrefs shared];        // 建档配置（默认值 + 磁盘覆盖）
             [WXRWeChat start];        // 记录自身身份、探测服务
+            [WXRSendProbe install];   // 发送路径探针（只记录，用来确认"到底发出去没有"）
             [WXRAutoReply start];     // 唯一的业务：自动回复
             WXRInstallMessageHooks();
             [WXRSettingsEntry install];

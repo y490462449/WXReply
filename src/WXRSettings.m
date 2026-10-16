@@ -1,6 +1,7 @@
 #import "WXRSettings.h"
 #import "WXRSettingsEntry.h"
 #import "WXRAutoReply.h"
+#import "WXRSendProbe.h"
 #import "WXROverrides.h"
 #import "WXRWeChat.h"
 #import "WXRPrefs.h"
@@ -210,7 +211,7 @@ typedef NS_ENUM(NSInteger, WXRRowKind) {
     NSMutableArray<WXRRow *> *diag = [NSMutableArray array];
     [diag addObject:[WXRRow row:@"长按标签栏打开设置" kind:WXRRowKindSwitch key:WXRKeyTabBarLongPress]];
     WXRRow *status = [WXRRow row:@"运行状态" kind:WXRRowKindInfo key:nil];
-    status.detail = [WXRAutoReply statusLine];
+    status.detail = [NSString stringWithFormat:@"%@ ｜ %@", [WXRAutoReply statusLine], [WXRSendProbe summary]];
     [diag addObject:status];
     WXRRow *logRow = [WXRRow row:@"查看日志" kind:WXRRowKindAction key:nil];
     logRow.action = ^{ [weakSelf showLog]; };

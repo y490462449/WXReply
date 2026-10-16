@@ -1,4 +1,5 @@
 #import "WXRWeChat.h"
+#import "WXRSendProbe.h"
 #import "WXRHook.h"
 #import "WXRLog.h"
 #import "WXRPrefs.h"
@@ -650,24 +651,44 @@ static BOOL WXRIsForwardingProxy(id object) {
 
     // 顺序：先用户指定的候选名（含设置里的「候选名覆盖」），再自动发现。
     // 自动发现可能会挑到同名的边角方法，所以只能当兜底。
+    BOOL invoked = NO;
     if ([self trySendTextVia:WXRSendTextSelectors() manager:manager text:text session:session]) {
-        return YES;
+        invoked = YES;
+    } else if ([self trySendWrapVia:WXRSendMsgSelectors() manager:manager wrap:wrap]) {
+        invoked = YES;
+    } else {
+        if (textSelectors.count || wrapSelectors.count) {
+            WXRLog(@"[send] 候选名都不匹配，改用自动发现（结果仅供参考）");
+        }
+        if ([self trySendTextVia:textSelectors manager:manager text:text session:session]) {
+            invoked = YES;
+        } else if ([self trySendWrapVia:wrapSelectors manager:manager wrap:wrap]) {
+            invoked = YES;
+        }
     }
-    if ([self trySendWrapVia:WXRSendMsgSelectors() manager:manager wrap:wrap]) {
-        return YES;
-    }
-    if (textSelectors.count || wrapSelectors.count) {
-        WXRLog(@"[send] 候选名都不匹配，改用自动发现（结果仅供参考）");
-    }
-    if ([self trySendTextVia:textSelectors manager:manager text:text session:session]) {
-        return YES;
-    }
-    if ([self trySendWrapVia:wrapSelectors manager:manager wrap:wrap]) {
+    if (invoked) {
+        [WXRSendProbe noteAttemptedContent:text];
+        [self scheduleSendConfirmationCheck:text];
         return YES;
     }
 
     [[self shared] logSendDiagnostics];
     return NO;
+}
+
+// 调完发送接口后，用微信自己的"发出成功"回调来确认（3 秒窗口）。
+// 这样"已调用"和"真的发出去了"就分得清，不用靠猜。
++ (void)scheduleSendConfirmationCheck:(NSString *)text {
+    NSTimeInterval attemptedAt = [[NSDate date] timeIntervalSince1970];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if ([WXRSendProbe wasConfirmedAfter:attemptedAt content:text]) {
+            WXRLog(@"[send] ✅ 微信回调确认已发出：%@", text);
+        } else {
+            WXRLog(@"[send] ⚠️ 3 秒内没等到发送成功回调，这条可能没发出去；"
+                   @"请在微信里手动发一条消息，从探针日志看微信自己用的是哪个方法");
+        }
+    });
 }
 
 // 发送接口可能不在 CMessageMgr 上（8.0.76 就是如此），这儿把可能的类和方法都探一遍。
