@@ -434,12 +434,8 @@ static NSUInteger WXRSelectorArity(NSString *selector) {
 
 /* ---------------- 发送 ---------------- */
 
-// 列出对象的实例方法（含父类链）。
-// 注意：object_getClass(实例) 就是它的类对象，要传给 class_copyMethodList 的是这个；
-// 再套一层 object_getClass 就变成元类了，那样只能枚举到类方法（发送方法都是实例方法）。
-static NSArray<NSString *> *WXRInstanceSelectors(id object) {
+static NSArray<NSString *> *WXRSelectorsOfClass(Class cls) {
     NSMutableArray<NSString *> *out = [NSMutableArray array];
-    Class cls = object_getClass(object);
     while (cls && cls != [NSObject class]) {
         unsigned int count = 0;
         Method *methods = class_copyMethodList(cls, &count);
@@ -454,13 +450,24 @@ static NSArray<NSString *> *WXRInstanceSelectors(id object) {
     return out;
 }
 
-// 发文件/图片/红包那些别碰
+// 列出对象的实例方法（含父类链）。
+// 注意：object_getClass(实例) 就是它的类对象，要传给 class_copyMethodList 的是这个；
+// 再套一层 object_getClass 就变成元类了，那样只能枚举到类方法（发送方法都是实例方法）。
+static NSArray<NSString *> *WXRInstanceSelectors(id object) {
+    return WXRSelectorsOfClass(object_getClass(object));
+}
+
+// 这些不是"给会话发消息"，自动识别时一律排除（8.0.76 上就踩过：
+// onOpenUploadSendBypassMsg: / sendBypassMsg: / ResendMsg:MsgWrap: 之类都是内部边角方法）
+static NSArray<NSString *> *WXRBlockedSendWords(void) {
+    return @[@"file", @"img", @"image", @"video", @"voice", @"audio", @"red", @"pay", @"emoji",
+             @"location", @"verify", @"invite", @"friend", @"card", @"gift", @"sticker", @"game",
+             @"bypass", @"notification", @"updatemsgsource", @"opensend", @"resend"];
+}
+
 static BOOL WXRSelectorLooksLikeMedia(NSString *selector) {
     NSString *lower = selector.lowercaseString;
-    NSArray<NSString *> *blocked = @[@"file", @"img", @"image", @"video", @"voice", @"audio", @"red",
-                                     @"pay", @"emoji", @"location", @"verify", @"invite", @"friend",
-                                     @"card", @"gift", @"sticker", @"game"];
-    for (NSString *word in blocked) {
+    for (NSString *word in WXRBlockedSendWords()) {
         if ([lower containsString:word]) {
             return YES;
         }
@@ -468,13 +475,14 @@ static BOOL WXRSelectorLooksLikeMedia(NSString *selector) {
     return NO;
 }
 
-// 名字像"直接发文本"：含 send 且含 text/content
+// 名字像"直接发文本"：含 send 且含 text/content/message
 static BOOL WXRSelectorLooksLikeSendText(NSString *selector) {
     NSString *lower = selector.lowercaseString;
     if (![lower containsString:@"send"] || WXRSelectorLooksLikeMedia(selector)) {
         return NO;
     }
-    return [lower containsString:@"text"] || [lower containsString:@"content"];
+    return [lower containsString:@"text"] || [lower containsString:@"content"] ||
+           [lower containsString:@"message"];
 }
 
 // 名字像"发 MsgWrap"：含 send 且含 msg
@@ -640,17 +648,21 @@ static BOOL WXRIsForwardingProxy(id object) {
         WXRLog(@"[send] 没能构造 CMessageWrap，只能走「发文本」这一路");
     }
 
-    // 顺序：微信自己的"发文本" → 发 wrap → 固定候选名兜底
-    if ([self trySendTextVia:textSelectors manager:manager text:text session:session]) {
-        return YES;
-    }
-    if ([self trySendWrapVia:wrapSelectors manager:manager wrap:wrap]) {
-        return YES;
-    }
+    // 顺序：先用户指定的候选名（含设置里的「候选名覆盖」），再自动发现。
+    // 自动发现可能会挑到同名的边角方法，所以只能当兜底。
     if ([self trySendTextVia:WXRSendTextSelectors() manager:manager text:text session:session]) {
         return YES;
     }
     if ([self trySendWrapVia:WXRSendMsgSelectors() manager:manager wrap:wrap]) {
+        return YES;
+    }
+    if (textSelectors.count || wrapSelectors.count) {
+        WXRLog(@"[send] 候选名都不匹配，改用自动发现（结果仅供参考）");
+    }
+    if ([self trySendTextVia:textSelectors manager:manager text:text session:session]) {
+        return YES;
+    }
+    if ([self trySendWrapVia:wrapSelectors manager:manager wrap:wrap]) {
         return YES;
     }
 
@@ -658,24 +670,90 @@ static BOOL WXRIsForwardingProxy(id object) {
     return NO;
 }
 
+// 发送接口可能不在 CMessageMgr 上（8.0.76 就是如此），这儿把可能的类和方法都探一遍。
+// 用 class_getInstanceMethod 判断存在性：这是准的，不受 MMServiceWrapper 代理影响。
+static NSArray<NSString *> *WXRSendProbeClasses(void) {
+    return @[@"CMessageMgr", @"MessageService", @"CMessageService", @"MessageMgr", @"CMsgMgr",
+             @"MMMessageService", @"MessageLogicMgr", @"MMMsgLogicMgr", @"CMessageLogicMgr",
+             @"MessageSender", @"CMessageSender", @"MMMessageMgr", @"MsgService", @"CMsgService"];
+}
+
+static NSArray<NSString *> *WXRSendProbeSelectors(void) {
+    return @[@"AsyncSendMsg:", @"SendMsg:", @"SendMsg:Ext:", @"AsyncSendMsg:Ext:",
+             @"sendMsg:", @"sendMsg:Ext:", @"SendMsgWrap:", @"sendMsgWrap:",
+             @"SendTextMsg:toSession:", @"SendTextMsg:toUsrName:", @"SendTextMsg:",
+             @"AsyncSendTextMsg:toSession:", @"AsyncSendTextMsg:toUsrName:",
+             @"sendTextMessage:toSession:", @"sendText:toSession:", @"sendText:toUsr:",
+             @"sendMessage:toSession:", @"sendMessage:", @"SendMsgToSession:content:",
+             @"AddMsgToSendQueue:", @"PostMsg:", @"PushMsg:", @"InsertMsg:",
+             @"AddMsg:MsgWrap:", @"AddMsg:", @"SendMsgToUsr:", @"sendTextMsg:toUsr:"];
+}
+
+- (void)probeSendInterfaces {
+    NSMutableArray<NSString *> *hits = [NSMutableArray array];
+    for (NSString *className in WXRSendProbeClasses()) {
+        Class cls = objc_getClass(className.UTF8String);
+        if (!cls) {
+            continue;
+        }
+        NSMutableArray<NSString *> *related = [NSMutableArray array];
+        for (NSString *selector in WXRSelectorsOfClass(cls)) {
+            NSString *lower = selector.lowercaseString;
+            if ([lower containsString:@"send"] || [lower containsString:@"msg"]) {
+                [related addObject:[NSString stringWithFormat:@"%@(%lu)", selector,
+                                    (unsigned long)WXRSelectorArity(selector)]];
+            }
+        }
+        if (related.count) {
+            [related sortUsingSelector:@selector(compare:)];
+            WXRLog(@"[send] 类 %@ 上与发送相关的方法：%@", className,
+                   [related componentsJoinedByString:@", "]);
+        }
+        for (NSString *selector in WXRSendProbeSelectors()) {
+            if (class_getInstanceMethod(cls, NSSelectorFromString(selector))) {
+                [hits addObject:[NSString stringWithFormat:@"%@ -%@", className, selector]];
+            }
+        }
+    }
+    WXRLog(@"[send] 发送接口探测命中：%@",
+           hits.count ? [hits componentsJoinedByString:@", "] : @"（候选名字一个都没命中）");
+}
+
 - (void)logSendDiagnostics {
     id manager = [[self class] messageManager];
     if (!manager) {
         return;
     }
-    NSMutableArray<NSString *> *described = [NSMutableArray array];
+    NSString *className = NSStringFromClass(object_getClass(manager));
+    NSMutableArray<NSString *> *relevant = [NSMutableArray array];
+    NSMutableArray<NSString *> *usable = [NSMutableArray array];
+    NSMutableArray<NSString *> *everything = [NSMutableArray array];
     for (NSString *selector in WXRInstanceSelectors(manager)) {
-        if ([selector.lowercaseString containsString:@"send"]) {
-            [described addObject:[NSString stringWithFormat:@"%@(%lu)", selector,
-                                  (unsigned long)WXRSelectorArity(selector)]];
+        NSString *lower = selector.lowercaseString;
+        NSString *described = [NSString stringWithFormat:@"%@(%lu)", selector,
+                               (unsigned long)WXRSelectorArity(selector)];
+        [everything addObject:described];
+        if ([lower containsString:@"send"] || [lower containsString:@"msg"] ||
+            [lower containsString:@"text"] || [lower containsString:@"message"]) {
+            [relevant addObject:described];
+            if (!WXRSelectorLooksLikeMedia(selector)) {
+                [usable addObject:described];
+            }
         }
     }
-    [described sortUsingSelector:@selector(compare:)];
-    WXRLog(@"[send] %@ 上含 send 的实例方法（名字(参数个数)）：%@",
-           NSStringFromClass(object_getClass(manager)),
-           described.count ? [described componentsJoinedByString:@", "] : @"（一个都没有）");
-    if (!described.count) {
-        WXRLog(@"[send] 这个对象里包了什么：\n%@", [[self class] describeObject:manager maxLength:800]);
+    [relevant sortUsingSelector:@selector(compare:)];
+    [everything sortUsingSelector:@selector(compare:)];
+    WXRLog(@"[send] %@ 上与发送相关的方法（名字(参数个数)），请把这一行发回：%@",
+           className, relevant.count ? [relevant componentsJoinedByString:@", "] : @"（一个都没有）");
+    if (!usable.count) {
+        // 一个能用的都没有 → 把整张方法表也打出来（截断），人工挑出真正的发送接口
+        NSString *all = [everything componentsJoinedByString:@", "];
+        if (all.length > 4000) {
+            all = [[all substringToIndex:4000] stringByAppendingString:@" …(截断)"];
+        }
+        WXRLog(@"[send] %@ 的全部实例方法（用于人工确认真正的发送接口）：%@", className, all);
+        WXRLog(@"[send] 也可以自己在 设置 → 候选名覆盖 里填一行：sendtext=真实方法名（或 sendmsg=真实方法名）");
+        [self probeSendInterfaces];
     }
 }
 
