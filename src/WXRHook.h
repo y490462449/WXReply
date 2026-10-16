@@ -55,6 +55,9 @@ id WXRCall(id target, NSString *selector);
 id WXRCall1(id target, NSString *selector, id a1);
 id WXRCall2(id target, NSString *selector, id a1, id a2);
 id WXRCall3(id target, NSString *selector, id a1, id a2, id a3);
+/// 参数是 SEL 的方法（如 forwardingTargetForSelector:）。
+/// 注意不要用 WXRCall1 传 SEL —— ARC 会报 implicit conversion of 'SEL' to 'id'。
+id WXRCallSEL(id target, NSString *selector, SEL a1);
 /// 对类对象（类方法）调用
 id WXRCallClass(NSString *className, NSString *selector);
 

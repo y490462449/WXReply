@@ -195,7 +195,7 @@ static id WXRUnwrapService(id service) {
     }
     // 1) 让代理自己告诉我们它转发给谁
     for (NSString *probe in @[@"AsyncSendMsg:", @"SendMsg:", @"AsyncOnAddMsg:MsgWrap:", @"SendMsg:MsgWrap:"]) {
-        id target = WXRCall1(service, @"forwardingTargetForSelector:", NSSelectorFromString(probe));
+        id target = WXRCallSEL(service, @"forwardingTargetForSelector:", NSSelectorFromString(probe));
         if (target && target != service) {
             WXRLog(@"[bridge] %@ 转发给 %@", className, NSStringFromClass(object_getClass(target)));
             return target;

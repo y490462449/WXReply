@@ -222,6 +222,40 @@ def typed_dot_variable_issues(path, code, declared, properties_by_class, supercl
     return issues
 
 
+# 这些助手的参数是 id；把 SEL / Class 这类非对象指针传进去，ARC 下直接编译报错
+ID_ARG_HELPERS = ("WXRCall1", "WXRCall2", "WXRCall3")
+NON_OBJECT_ARG = re.compile(r"(@selector\s*\(|NSSelectorFromString\s*\(|sel_registerName\s*\(|"
+                            r"NSSelectorFromName\s*\(|objc_getClass\s*\(|objc_getMetaClass\s*\()")
+
+
+def non_object_argument_issues(path, code):
+    """把 SEL/Class 当 id 传 —— 真机上报 implicit conversion ... disallowed with ARC。"""
+    issues = []
+    for helper in ID_ARG_HELPERS:
+        for match in re.finditer(r"\b" + helper + r"\s*\(", code):
+            start = match.end() - 1
+            depth = 0
+            end = start
+            for index in range(start, len(code)):
+                char = code[index]
+                if char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                    if depth == 0:
+                        end = index
+                        break
+            args = [piece.strip() for piece in code[start + 1:end].split(",")]
+            for position, argument in enumerate(args):
+                if position < 2:            # 第 1 个是 target，第 2 个是 selector 字符串
+                    continue
+                if NON_OBJECT_ARG.search(argument):
+                    line = code[:match.start()].count("\n") + 1
+                    issues.append(f"{path.name}:{line} 把 SEL/Class 当 id 传给 {helper}"
+                                  f"（ARC 报 implicit conversion）: {argument[:60]}")
+    return issues
+
+
 def dot_arg_issues(path, code):
     """点语法后跟冒号 = 把带参数的方法当属性用，编译不过。"""
     issues = []
@@ -623,6 +657,7 @@ def main():
         issues += duplicate_method_issues(path, code)
         issues += dot_arg_issues(path, code)
         issues += write_data_issues(path, code)
+        issues += non_object_argument_issues(path, code)
         for match in re.finditer(r'#import\s+"([^"]+)"', raw):
             if match.group(1) not in header_names:
                 issues.append(f"{path.name}: 找不到头文件 {match.group(1)}")

@@ -143,17 +143,36 @@ static id WXRInvoke(id target, NSString *selector, id a1, id a2, id a3, NSIntege
         return nil;
     }
     SEL sel = NSSelectorFromString(selector);
-    if (![target respondsToSelector:sel]) {
-        return nil;
-    }
+    // 这里不检查 respondsToSelector:：转发代理（MMServiceWrapper 之类）本来就不实现方法，
+    // 但 methodForSelector: 会返回转发 IMP，照样能调到真实服务。
     @try {
         IMP imp = [target methodForSelector:sel];
+        if (!imp) {
+            return nil;
+        }
         switch (argc) {
             case 0: return ((id (*)(id, SEL))imp)(target, sel);
             case 1: return ((id (*)(id, SEL, id))imp)(target, sel, a1);
             case 2: return ((id (*)(id, SEL, id, id))imp)(target, sel, a1, a2);
             default: return ((id (*)(id, SEL, id, id, id))imp)(target, sel, a1, a2, a3);
         }
+    } @catch (NSException *e) {
+        WXRLog(@"[call] %@ 异常: %@", selector, e.reason);
+        return nil;
+    }
+}
+
+id WXRCallSEL(id target, NSString *selector, SEL a1) {
+    if (!target || !selector.length) {
+        return nil;
+    }
+    SEL sel = NSSelectorFromString(selector);
+    @try {
+        IMP imp = [target methodForSelector:sel];
+        if (!imp) {
+            return nil;
+        }
+        return ((id (*)(id, SEL, SEL))imp)(target, sel, a1);
     } @catch (NSException *e) {
         WXRLog(@"[call] %@ 异常: %@", selector, e.reason);
         return nil;
