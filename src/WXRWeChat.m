@@ -620,14 +620,18 @@ static BOOL WXRIsForwardingProxy(id object) {
     return NO;
 }
 
-// 出站消息可以试的几种调用方式（第一个参数是对象，所以试调用在 ABI 层面是安全的）。
-// 每个参数都用对象：会话名 或 @(0)。到底哪种管用，靠微信自己的成功回调验证。
+// 出站消息可以试的几种调用方式（参数都是对象，试调用在 ABI 层面安全）。
+// 顺序按"最像真正的发送路径"排：
+//   AddMsg            —— 微信自己处理消息入库走的就是它（收消息路径里出现过）
+//   AddUniqueLocalMsg —— 入库且唯一
+//   AddLocalMsg       —— 已证实"只入库、不上传"，所以排在后面
+//   ResendMsg         —— 可能触发重发/上传
 static NSArray<NSArray *> *WXROutgoingAttempts(void) {
-    return @[@[@"AddLocalMsg:MsgWrap:", @YES],
-             @[@"AddLocalMsg:MsgWrap:", @NO],
+    return @[@[@"AddMsg:MsgWrap:", @YES],
              @[@"AddUniqueLocalMsg:MsgWrap:", @YES],
-             @[@"AddUniqueLocalMsg:MsgWrap:", @NO],
-             @[@"AddMsg:MsgWrap:", @YES],
+             @[@"AddLocalMsg:MsgWrap:", @YES],
+             @[@"ResendMsg:MsgWrap:", @YES],
+             @[@"AddLocalMsg:MsgWrap:", @NO],
              @[@"AddMsg:MsgWrap:", @NO]];
 }
 
@@ -776,15 +780,11 @@ static BOOL gLastAttemptInserted = NO;     // 上一次调用是否真的把消�
             return;
         }
         if (index >= 0) {
-            if (gLastAttemptInserted) {
-                // 消息已经进了会话，只是没上传 —— 换方式只会多插一条重复气泡，没意义
-                WXRLog(@"[send] ⚠️ 消息已插入会话，但没等到上传成功回调；保持当前方式不换"
-                       @"（要修的是出站消息的字段，不是插入方法）");
-            } else {
-                gSendRotation = index + 1;
-                WXRLog(@"[send] ⚠️ 第 %ld 种方式连插入都没成功，下一条消息改试第 %ld 种",
-                       (long)index + 1, (long)(gSendRotation + 1));
-            }
+            gSendRotation = index + 1;
+            WXRLog(@"[send] ⚠️ 第 %ld 种方式没等到上传成功回调%@，下一条消息改试第 %ld 种",
+                   (long)index + 1,
+                   gLastAttemptInserted ? @"（消息已入库但没上传）" : @"（连入库都没成功）",
+                   (long)(gSendRotation + 1));
         } else {
             WXRLog(@"[send] ⚠️ 3 秒内没等到发送成功回调，这条可能没发出去；"
                    @"请在微信里手动发一条消息，从 [probe] 日志看微信自己用的是哪个方法");
