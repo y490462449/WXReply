@@ -16,6 +16,10 @@
 
 /// 微信回调告知"已发出"时记录（由钩子内部调用）
 + (void)noteSentContent:(NSString *)content;
+/// 微信回调告知"发送失败"时记录
++ (void)noteFailedContent:(NSString *)content;
+/// 在 timestamp 之后是否收到过失败回调
++ (BOOL)failedAfter:(NSTimeInterval)timestamp;
 /// 我们自己尝试发送时记录，便于和上面的回调对上
 + (void)noteAttemptedContent:(NSString *)content;
 /// 在 timestamp 之后是否收到过与 content 对应的发送成功回调

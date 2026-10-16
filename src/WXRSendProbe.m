@@ -7,6 +7,8 @@ static BOOL gProbeInstalled = NO;
 static NSString *gLastSentContent = nil;
 static NSTimeInterval gLastSentAt = 0;
 static NSInteger gSentCount = 0;
+static NSString *gFailedContent = nil;
+static NSTimeInterval gFailedAt = 0;
 static NSString *gAttemptedContent = nil;
 static NSTimeInterval gAttemptedAt = 0;
 
@@ -61,9 +63,20 @@ static void WXRProbeSentBySender(id self, SEL _cmd, id a1) {
 
 static void (*gOrigSendFail)(id, SEL, id) = NULL;
 static void WXRProbeSendFail(id self, SEL _cmd, id a1) {
+    [WXRSendProbe noteFailedContent:[WXRWeChat contentOfWrap:a1]];
     WXRLog(@"[probe] ❌ 微信发送失败回调 %@：%@", NSStringFromSelector(_cmd), WXRBriefWrap(a1));
     if (gOrigSendFail) {
         gOrigSendFail(self, _cmd, a1);
+    }
+}
+
+// OnSendMessageSuccess: 也是发送结果回调，一并挂上（真机上 OnMessageSentBySender: 不一定触发）
+static void (*gOrigSendSuccess)(id, SEL, id) = NULL;
+static void WXRProbeSendSuccess(id self, SEL _cmd, id a1) {
+    [WXRSendProbe noteSentContent:[WXRWeChat contentOfWrap:a1]];
+    WXRLog(@"[probe] ✅ 微信发出成功回调 %@：%@", NSStringFromSelector(_cmd), WXRBriefWrap(a1));
+    if (gOrigSendSuccess) {
+        gOrigSendSuccess(self, _cmd, a1);
     }
 }
 
@@ -155,6 +168,9 @@ static void WXRProbeAddLocal4(id self, SEL _cmd, id a1, id a2, BOOL a3, BOOL a4)
     [WXRHook hookAnyClass:classes selector:@"OnSendMessageFail:" isClassMethod:NO
               replacement:(IMP)WXRProbeSendFail original:(IMP *)&gOrigSendFail
                      note:@"发送失败回调"];
+    [WXRHook hookAnyClass:classes selector:@"OnSendMessageSuccess:" isClassMethod:NO
+              replacement:(IMP)WXRProbeSendSuccess original:(IMP *)&gOrigSendSuccess
+                     note:@"发送成功回调"];
     [WXRHook hookAnyClass:classes selector:@"AddLocalMsg:MsgWrap:" isClassMethod:NO
               replacement:(IMP)WXRProbeAddLocal original:(IMP *)&gOrigAddLocal
                      note:@"出站消息插入(AddLocalMsg)"];
@@ -194,6 +210,19 @@ static void WXRProbeAddLocal4(id self, SEL _cmd, id a1, id a2, BOOL a3, BOOL a4)
         gSentCount++;
         gLastSentAt = [[NSDate date] timeIntervalSince1970];
         gLastSentContent = [content copy];
+    }
+}
+
++ (void)noteFailedContent:(NSString *)content {
+    @synchronized ([self class]) {
+        gFailedAt = [[NSDate date] timeIntervalSince1970];
+        gFailedContent = [content copy];
+    }
+}
+
++ (BOOL)failedAfter:(NSTimeInterval)timestamp {
+    @synchronized ([self class]) {
+        return gFailedAt >= timestamp;
     }
 }
 

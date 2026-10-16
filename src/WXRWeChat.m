@@ -118,9 +118,14 @@ static NSArray<NSString *> *WXRTimeKeys(void) {
 }
 
 + (void)start {
-    WXRLog(@"[bridge] 宿主=%@ 微信=%@（服务对象在收到消息时惰性获取）",
-           [[NSProcessInfo processInfo] processName],
-           [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"?");
+    NSString *hostName = [[NSProcessInfo processInfo] processName];
+    NSString *wxVersion = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"?";
+    WXRLog(@"[bridge] 宿主=%@ 微信=%@（服务对象在收到消息时惰性获取）", hostName, wxVersion);
+
+    // 实测确认：微信自己发消息用的就是第 1 种（AddMsg:MsgWrap:，参数是「会话名, wrap」）。
+    // 每次启动固定回它，避免残留的轮转指针继续去试别的（那些尝试只会多插气泡）。
+    [[WXRPrefs shared] setInteger:0 forKey:WXRKeySendStrategy];
+    WXRLog(@"[send] 发送方式固定为第 1 种：AddMsg:MsgWrap:（会话名, wrap）");
 }
 
 // 取 MMServiceCenter 单例。
@@ -620,24 +625,142 @@ static BOOL WXRIsForwardingProxy(id object) {
     return NO;
 }
 
-// 出站消息可以试的几种调用方式（参数都是对象，试调用在 ABI 层面安全）。
-// 顺序按"最像真正的发送路径"排：
-//   AddMsg            —— 微信自己处理消息入库走的就是它（收消息路径里出现过）
-//   AddUniqueLocalMsg —— 入库且唯一
-//   AddLocalMsg       —— 已证实"只入库、不上传"，所以排在后面
-//   ResendMsg         —— 可能触发重发/上传
+typedef NS_ENUM(NSInteger, WXRSendShape) {
+    WXRSendShapeSessionWrap = 0,       // (会话名, wrap)
+    WXRSendShapeZeroWrap,              // (@0, wrap)
+    WXRSendShapeSessionWrapNotify,     // (会话名, wrap, fixTime=NO, NewMsgArriveNotify=YES)
+};
+
+// 只读普查：找出"入库之后到底谁负责上传"。纯枚举、不打钩子，所以没有任何崩溃风险。
++ (NSString *)sendPathSurvey {
+    unsigned int classCount = 0;
+    Class *classes = objc_copyClassList(&classCount);
+    if (!classes) {
+        return @"（objc_copyClassList 失败）";
+    }
+    NSMutableString *out = [NSMutableString string];
+    NSInteger matchedClasses = 0;
+    NSInteger matchedMethods = 0;
+    for (unsigned int i = 0; i < classCount; i++) {
+        Class cls = classes[i];
+        NSString *name = NSStringFromClass(cls);
+        if (!name.length) {
+            continue;
+        }
+        if (!([name containsString:@"Sync"] || [name containsString:@"Send"] ||
+              [name containsString:@"Upload"] || [name containsString:@"Post"])) {
+            continue;
+        }
+        NSMutableArray<NSString *> *methods = [NSMutableArray array];
+        for (NSString *selector in WXRSelectorsOfClass(cls)) {
+            NSString *lower = selector.lowercaseString;
+            if (!([lower containsString:@"send"] || [lower containsString:@"upload"] ||
+                  [lower containsString:@"post"] || [lower containsString:@"push"] ||
+                  [lower containsString:@"submit"])) {
+                continue;
+            }
+            NSMethodSignature *signature = [cls instanceMethodSignatureForSelector:NSSelectorFromString(selector)];
+            NSMutableString *types = [NSMutableString string];
+            if (signature) {
+                for (NSUInteger a = 0; a < signature.numberOfArguments; a++) {
+                    const char *type = [signature getArgumentTypeAtIndex:a];
+                    [types appendFormat:@"%s", type ? type : "?"];
+                }
+            }
+            [methods addObject:[NSString stringWithFormat:@"- %@ [%@]", selector, types]];
+        }
+        if (!methods.count) {
+            continue;
+        }
+        matchedClasses++;
+        matchedMethods += (NSInteger)methods.count;
+        if (out.length < 8000) {
+            [out appendFormat:@"\n== %@\n  %@\n", name, [methods componentsJoinedByString:@"\n  "]];
+        }
+    }
+    free(classes);
+    return [NSString stringWithFormat:@"扫描 %u 个类：命中 %ld 个「发送/同步/上传」相关类、%ld 个方法。\n%@",
+            classCount, (long)matchedClasses, (long)matchedMethods, out];
+}
+
+// 出站消息可以试的几种调用方式。参数形状都按各方法真实的类型编码来（都是对象或 BOOL，ABI 安全）。
+// 顺序按"最像真正的发送路径"排：已实测 AddMsg / AddUniqueLocalMsg / AddLocalMsg 都只入库不上传，
+// 所以把带 fixTime/NewMsgArriveNotify 的那个放在后面继续试。
 static NSArray<NSArray *> *WXROutgoingAttempts(void) {
-    return @[@[@"AddMsg:MsgWrap:", @YES],
-             @[@"AddUniqueLocalMsg:MsgWrap:", @YES],
-             @[@"AddLocalMsg:MsgWrap:", @YES],
-             @[@"ResendMsg:MsgWrap:", @YES],
-             @[@"AddLocalMsg:MsgWrap:", @NO],
-             @[@"AddMsg:MsgWrap:", @NO]];
+    return @[@[@"AddMsg:MsgWrap:", @(WXRSendShapeSessionWrap)],
+             @[@"AddUniqueLocalMsg:MsgWrap:", @(WXRSendShapeSessionWrap)],
+             @[@"AddLocalMsg:MsgWrap:", @(WXRSendShapeSessionWrap)],
+             @[@"AddLocalMsg:MsgWrap:fixTime:NewMsgArriveNotify:", @(WXRSendShapeSessionWrapNotify)],
+             @[@"ResendMsg:MsgWrap:", @(WXRSendShapeSessionWrap)],
+             @[@"AddLocalMsg:MsgWrap:", @(WXRSendShapeZeroWrap)],
+             @[@"AddMsg:MsgWrap:", @(WXRSendShapeZeroWrap)]];
+}
+
+// 4 参数那个方法的签名是 v40@0:8@16@24B32B36（最后两个是 BOOL 标量），必须按真实类型调
+static void WXRCallAddLocal4(id target, NSString *selector, id a1, id a2, BOOL a3, BOOL a4) {
+    SEL sel = NSSelectorFromString(selector);
+    @try {
+        IMP imp = [target methodForSelector:sel];
+        if (!imp) {
+            return;
+        }
+        ((void (*)(id, SEL, id, id, BOOL, BOOL))imp)(target, sel, a1, a2, a3, a4);
+    } @catch (NSException *e) {
+        WXRLog(@"[send] %@ 异常: %@", selector, e.reason);
+    }
 }
 
 static NSInteger gSendAttemptIndex = -1;   // 本次用的轮转编号（-1 = 不是轮转）
 static NSInteger gSendRotation = 0;        // 下一次该试第几种
 static BOOL gLastAttemptInserted = NO;     // 上一次调用是否真的把消息插进会话了
+static id gLastAttemptWrap = nil;          // 上一次用的 wrap（留着回读状态，判断有没有真的发出去）
+
+// 真机验证：OnMessageSentBySender: 这个"发送成功回调"在 8.0.76 上不一定触发
+// （微信自己手动发消息时也没触发），所以主力判据改成"回读我们自己那个 wrap 的状态"：
+//   m_uiStatus：1 = 发送中；变成别的值说明状态已经流转
+//   m_n64MesSvrID：变成非 0 说明服务器已经受理
++ (NSString *)lastAttemptStateText {
+    id wrap = gLastAttemptWrap;
+    if (!wrap) {
+        return @"(没有 wrap)";
+    }
+    return [NSString stringWithFormat:@"状态=%@ svrID=%@",
+            WXRValueAny(wrap, @[@"m_uiStatus", @"m_nStatus"]),
+            WXRValueAny(wrap, @[@"m_n64MesSvrID", @"m_n64MesSvrId", @"m_uiMesSvrID"])];
+}
+
++ (BOOL)lastAttemptLooksSent {
+    id wrap = gLastAttemptWrap;
+    if (!wrap) {
+        return NO;
+    }
+    id serverId = WXRValueAny(wrap, @[@"m_n64MesSvrID", @"m_n64MesSvrId", @"m_uiMesSvrID"]);
+    if ([serverId respondsToSelector:@selector(longLongValue)] && [serverId longLongValue] != 0) {
+        return YES;
+    }
+    id status = WXRValueAny(wrap, @[@"m_uiStatus", @"m_nStatus"]);
+    NSInteger value = [status respondsToSelector:@selector(integerValue)] ? [status integerValue] : 0;
+    return (value != 0 && value != 1);
+}
+
+// 判据（按可靠性排序，实测得出）：
+//   ① 收到明确的失败回调 → 失败
+//   ② 消息已经成功入库 → 成功：微信会负责把它上传发出去
+//      （实测：对方确实能收到；但本机 wrap 的状态不一定被回写，
+//        所以"只看状态"会把成功判成失败——这正是之前误报的原因）
+//   ③ wrap 状态流转 / 服务器 id 非 0 / 发送成功回调 → 也算成功
++ (BOOL)lastAttemptSucceededAfter:(NSTimeInterval)attemptedAt content:(NSString *)text {
+    if ([WXRSendProbe failedAfter:attemptedAt]) {
+        return NO;
+    }
+    if (gLastAttemptInserted) {
+        return YES;
+    }
+    if ([self lastAttemptLooksSent]) {
+        return YES;
+    }
+    return [WXRSendProbe wasConfirmedAfter:attemptedAt content:text];
+}
 
 + (BOOL)invokeOutgoingAttemptAtIndex:(NSInteger)index
                                  text:(NSString *)text
@@ -652,16 +775,28 @@ static BOOL gLastAttemptInserted = NO;     // 上一次调用是否真的把消�
         return NO;
     }
     NSString *selector = attempts[(NSUInteger)index][0];
-    BOOL useSession = [attempts[(NSUInteger)index][1] boolValue];
+    WXRSendShape shape = (WXRSendShape)[attempts[(NSUInteger)index][1] integerValue];
     if (![manager respondsToSelector:NSSelectorFromString(selector)] && !WXRIsForwardingProxy(manager)) {
         WXRLog(@"[send] 第 %ld 种方式 %@ 在这个版本里不存在，跳过", (long)index + 1, selector);
         return NO;
     }
-    id first = useSession ? session : @(0);
-    WXRLog(@"[send] 试第 %ld 种发送方式：%@（第一个参数=%@）", (long)index + 1, selector,
-           [first isKindOfClass:[NSString class]] ? first : [first description]);
+    gLastAttemptWrap = wrap;
     [WXRSendProbe beginOurCall];
-    WXRCall2(manager, selector, first, wrap);
+    switch (shape) {
+        case WXRSendShapeSessionWrap:
+            WXRLog(@"[send] 试第 %ld 种发送方式：%@（会话名, wrap）", (long)index + 1, selector);
+            WXRCall2(manager, selector, session, wrap);
+            break;
+        case WXRSendShapeZeroWrap:
+            WXRLog(@"[send] 试第 %ld 种发送方式：%@（@0, wrap）", (long)index + 1, selector);
+            WXRCall2(manager, selector, @(0), wrap);
+            break;
+        case WXRSendShapeSessionWrapNotify:
+            WXRLog(@"[send] 试第 %ld 种发送方式：%@（会话名, wrap, fixTime=NO, notify=YES）",
+                   (long)index + 1, selector);
+            WXRCallAddLocal4(manager, selector, session, wrap, NO, YES);
+            break;
+    }
     [WXRSendProbe endOurCall];
     // 调用后回读 wrap：插入成功后微信通常会就地补上 localID / 状态，回读能看出插入到底成功没有
     id localID = WXRValueAny(wrap, @[@"m_uiMesLocalID", @"m_nMesLocalID"]);
@@ -763,6 +898,46 @@ static BOOL gLastAttemptInserted = NO;     // 上一次调用是否真的把消�
     return NO;
 }
 
+// 一键试遍所有方式：每个试一次、等 3 秒，没等到上传成功回调就换下一个。
+// 这是给使用者自助定案用的（设置里的「试遍所有发送方式」）。
++ (void)tryAllSendAttemptsForSession:(NSString *)session text:(NSString *)text {
+    if (!session.length || !text.length) {
+        WXRLog(@"[send] 试遍所有方式：缺少会话或内容");
+        return;
+    }
+    WXRLog(@"[send] ===== 开始试遍所有发送方式（共 %lu 种）=====", (unsigned long)WXROutgoingAttempts().count);
+    [self trySendAttemptAtIndex:0 session:session text:text];
+}
+
++ (void)trySendAttemptAtIndex:(NSInteger)index session:(NSString *)session text:(NSString *)text {
+    NSArray<NSArray *> *attempts = WXROutgoingAttempts();
+    if (index < 0 || index >= (NSInteger)attempts.count) {
+        WXRLog(@"[send] ===== 所有方式都试完了，都没等到上传成功回调 =====");
+        WXRLog(@"[send] 说明问题不在「用哪个方法插入」，而在出站消息的字段或上传触发上："
+               @"请打开 设置 → 自动回复 → 发送路径普查（只读），把结果发回；"
+               @"同时手动发一条消息，把 [probe] 的「微信自己发消息时调用了…」和「出站消息的完整字段」发回");
+        return;
+    }
+    id wrap = WXRMakeOutgoingTextWrap(text, session, [self selfUserName]);
+    if (![self invokeOutgoingAttemptAtIndex:index text:text session:session wrap:wrap]) {
+        [self trySendAttemptAtIndex:index + 1 session:session text:text];
+        return;
+    }
+    NSTimeInterval attemptedAt = [[NSDate date] timeIntervalSince1970];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if ([self lastAttemptSucceededAfter:attemptedAt content:text]) {
+            [[WXRPrefs shared] setInteger:index forKey:WXRKeySendStrategy];
+            WXRLog(@"[send] ✅ 第 %ld 种方式成功，已记住（以后固定用它）：%@",
+                   (long)index + 1, [self lastAttemptStateText]);
+            return;
+        }
+        WXRLog(@"[send] 第 %ld 种方式没成功（%@），继续试下一种", (long)index + 1,
+               [self lastAttemptStateText]);
+        [self trySendAttemptAtIndex:index + 1 session:session text:text];
+    });
+}
+
 // 调完发送接口后，用微信自己的"发出成功"回调来确认（3 秒窗口）。
 // 确认成功 → 记住这种方式；失败 → 下一条消息换下一种，逐条收敛。
 + (void)scheduleSendConfirmationCheck:(NSString *)text {
@@ -770,12 +945,13 @@ static BOOL gLastAttemptInserted = NO;     // 上一次调用是否真的把消�
     NSInteger index = gSendAttemptIndex;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        if ([WXRSendProbe wasConfirmedAfter:attemptedAt content:text]) {
+        if ([self lastAttemptSucceededAfter:attemptedAt content:text]) {
             if (index >= 0) {
                 [[WXRPrefs shared] setInteger:index forKey:WXRKeySendStrategy];
-                WXRLog(@"[send] ✅ 已确认发出，并记住第 %ld 种发送方式", (long)index + 1);
+                WXRLog(@"[send] ✅ 已发出，并记住第 %ld 种发送方式：%@", (long)index + 1,
+                       [self lastAttemptStateText]);
             } else {
-                WXRLog(@"[send] ✅ 微信回调确认已发出：%@", text);
+                WXRLog(@"[send] ✅ 已发出：%@", text);
             }
             return;
         }

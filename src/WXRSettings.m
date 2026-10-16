@@ -214,6 +214,25 @@ typedef NS_ENUM(NSInteger, WXRRowKind) {
     WXRRow *status = [WXRRow row:@"运行状态" kind:WXRRowKindInfo key:nil];
     status.detail = [NSString stringWithFormat:@"%@ ｜ %@", [WXRAutoReply statusLine], [WXRSendProbe summary]];
     [diag addObject:status];
+    WXRRow *surveyRow = [WXRRow row:@"发送路径普查（只读）" kind:WXRRowKindAction key:nil];
+    surveyRow.action = ^{
+        WXRLog(@"[settings] 开始发送路径普查（只读，不打钩子）");
+        [WXRSettings presentTextPageWithTitle:@"发送路径普查"
+                                         text:[WXRWeChat sendPathSurvey]];
+    };
+    [diag addObject:surveyRow];
+    WXRRow *tryAllRow = [WXRRow row:@"试遍所有发送方式（每个 3 秒）" kind:WXRRowKindAction key:nil];
+    tryAllRow.action = ^{
+        NSString *session = [WXRAutoReply lastPrivateSession];
+        if (!session.length) {
+            [weakSelf showMessage:@"还没有收到过私聊消息，先让人给你发一条。"];
+            return;
+        }
+        WXRLog(@"[settings] 开始试遍所有发送方式，会话=%@", session);
+        [WXRWeChat tryAllSendAttemptsForSession:session text:@"测试"];
+        [weakSelf showMessage:@"已开始依次尝试所有发送方式（每种等 3 秒），请看日志里的 [send] 行。"];
+    };
+    [diag addObject:tryAllRow];
     WXRRow *testSendRow = [WXRRow row:@"测试发送（上一条私聊会话）" kind:WXRRowKindAction key:nil];
     testSendRow.action = ^{ [weakSelf testSend]; };
     [diag addObject:testSendRow];

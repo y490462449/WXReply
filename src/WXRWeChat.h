@@ -42,6 +42,10 @@ typedef void (^WXRMessageHandler)(id wrap);
 
 /* ---------- 发消息 ---------- */
 + (BOOL)sendText:(NSString *)text toSession:(NSString *)session;
+/// 依次试遍所有"出站插入"方式，每种等 3 秒看有没有上传成功回调；成功就记住
++ (void)tryAllSendAttemptsForSession:(NSString *)session text:(NSString *)text;
+/// 只读普查：列出所有名字含 Sync/Send/Upload/Post 的类及其发送/上传类方法（不打任何钩子）
++ (NSString *)sendPathSurvey;
 
 /* ---------- 收消息管线 ---------- */
 + (void)addMessageHandler:(WXRMessageHandler)handler;
