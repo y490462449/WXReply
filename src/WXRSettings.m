@@ -129,6 +129,8 @@ typedef NS_ENUM(NSInteger, WXRRowKind) {
 - (void)switchChanged:(UISwitch *)sender;
 - (void)editRow:(WXRRow *)row;
 - (void)runAITest;
+- (void)testSend;
+- (void)showMessage:(NSString *)text;
 - (void)showLog;
 - (void)showDiagnostics;
 - (void)resetAll;
@@ -206,13 +208,15 @@ typedef NS_ENUM(NSInteger, WXRRowKind) {
     test.action = ^{ [weakSelf runAITest]; };
     [ai addObject:test];
     [sections addObject:ai];
-
     /* ---- 4. 入口与诊断 ---- */
     NSMutableArray<WXRRow *> *diag = [NSMutableArray array];
     [diag addObject:[WXRRow row:@"长按标签栏打开设置" kind:WXRRowKindSwitch key:WXRKeyTabBarLongPress]];
     WXRRow *status = [WXRRow row:@"运行状态" kind:WXRRowKindInfo key:nil];
     status.detail = [NSString stringWithFormat:@"%@ ｜ %@", [WXRAutoReply statusLine], [WXRSendProbe summary]];
     [diag addObject:status];
+    WXRRow *testSendRow = [WXRRow row:@"测试发送（上一条私聊会话）" kind:WXRRowKindAction key:nil];
+    testSendRow.action = ^{ [weakSelf testSend]; };
+    [diag addObject:testSendRow];
     WXRRow *logRow = [WXRRow row:@"查看日志" kind:WXRRowKindAction key:nil];
     logRow.action = ^{ [weakSelf showLog]; };
     [diag addObject:logRow];
@@ -351,6 +355,41 @@ typedef NS_ENUM(NSInteger, WXRRowKind) {
             [self presentViewController:alert animated:YES completion:nil];
         });
     }];
+}
+
+- (void)testSend {
+    NSString *session = [WXRAutoReply lastPrivateSession];
+    if (!session.length) {
+        [self showMessage:@"还没有收到过私聊消息。先让人给你发一条，让插件记下会话再测。"];
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"测试发送"
+                         message:[NSString stringWithFormat:@"发到：%@", session]
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.text = @"测试";
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"发送" style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        NSString *text = alert.textFields.firstObject.text ?: @"测试";
+        WXRLog(@"[settings] 测试发送到 %@：%@", session, text);
+        BOOL called = [WXRWeChat sendText:text toSession:session];
+        [weakSelf showMessage:called
+            ? @"已调用发送接口。请看日志里的 [send] 行确认到底有没有真的发出去。"
+            : @"没有可用的发送接口，请看日志里的 [send] 行。"];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)showMessage:(NSString *)text {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"提示"
+                                                                  message:text
+                                                           preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)showLog {

@@ -10,6 +10,10 @@
 
 + (void)install;
 
+/// 标记"接下来这次调用是我们自己发起的"（免得探针把我们的调用当成微信自己的）
++ (void)beginOurCall;
++ (void)endOurCall;
+
 /// 微信回调告知"已发出"时记录（由钩子内部调用）
 + (void)noteSentContent:(NSString *)content;
 /// 我们自己尝试发送时记录，便于和上面的回调对上

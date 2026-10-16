@@ -11,8 +11,13 @@ static NSMutableSet<NSString *> *gPending = nil;                         // 正�
 static NSMutableArray<NSString *> *gSentContents = nil;                  // 自己发出过的内容（防自问自答）
 static NSMutableArray<NSDictionary *> *gRecent = nil;                    // 最近消息（给 AI 当上下文）
 static NSString *gLastStatus = @"还没触发过";
+static NSString *gLastPrivateSession = nil;
 
 @implementation WXRAutoReply
+
++ (NSString *)lastPrivateSession {
+    return gLastPrivateSession;
+}
 
 + (void)start {
     static dispatch_once_t once;
@@ -89,6 +94,9 @@ static NSString *gLastStatus = @"还没触发过";
     }
 
     BOOL isGroup = [WXRWeChat isGroupSession:session];
+    if (!isGroup && session.length) {
+        gLastPrivateSession = [session copy];     // 记下来，设置里的"测试发送"要用
+    }
     if ([prefs boolForKey:WXRKeyPrivateOnly] && isGroup) {
         WXRLogVerbose(@"[reply] 设置里只回私聊，群聊跳过");
         return;

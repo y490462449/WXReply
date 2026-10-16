@@ -550,6 +550,10 @@ static id WXRMakeOutgoingTextWrap(NSString *text, NSString *session, NSString *f
     WXRSetAny(wrap, WXRTimeKeys(), @([[NSDate date] timeIntervalSince1970]));
     WXRSetAny(wrap, @[@"m_uiStatus", @"m_nStatus"], @(1));
     WXRSetAny(wrap, @[@"m_uiUploadStatus", @"m_nUploadStatus"], @(0));
+    WXRSetAny(wrap, @[@"m_uiSendTime", @"m_nSendTime"], @([[NSDate date] timeIntervalSince1970]));
+    // 出站消息通常还需要一个"客户端消息 id"；缺了它上传就可能一直不完成（气泡一直转圈）
+    WXRSetAny(wrap, @[@"m_nsClientMsgID", @"m_nsClientMsgId", @"nsClientMsgID"],
+              [[NSUUID UUID] UUIDString]);
     return wrap;
 }
 
@@ -622,6 +626,7 @@ static NSArray<NSArray *> *WXROutgoingAttempts(void) {
 
 static NSInteger gSendAttemptIndex = -1;   // 本次用的轮转编号（-1 = 不是轮转）
 static NSInteger gSendRotation = 0;        // 下一次该试第几种
+static BOOL gLastAttemptInserted = NO;     // 上一次调用是否真的把消息插进会话了
 
 + (BOOL)invokeOutgoingAttemptAtIndex:(NSInteger)index
                                  text:(NSString *)text
@@ -644,7 +649,18 @@ static NSInteger gSendRotation = 0;        // 下一次该试第几种
     id first = useSession ? session : @(0);
     WXRLog(@"[send] 试第 %ld 种发送方式：%@（第一个参数=%@）", (long)index + 1, selector,
            [first isKindOfClass:[NSString class]] ? first : [first description]);
+    [WXRSendProbe beginOurCall];
     WXRCall2(manager, selector, first, wrap);
+    [WXRSendProbe endOurCall];
+    // 调用后回读 wrap：插入成功后微信通常会就地补上 localID / 状态，回读能看出插入到底成功没有
+    id localID = WXRValueAny(wrap, @[@"m_uiMesLocalID", @"m_nMesLocalID"]);
+    gLastAttemptInserted = (localID != nil) && ([localID integerValue] != 0);
+    WXRLog(@"[send] 调用后 wrap 状态：localID=%@ status=%@ uploadStatus=%@ clientMsgID=%@（插入%@）",
+           localID,
+           WXRValueAny(wrap, @[@"m_uiStatus", @"m_nStatus"]),
+           WXRValueAny(wrap, @[@"m_uiUploadStatus", @"m_nUploadStatus"]),
+           WXRValueAny(wrap, @[@"m_nsClientMsgID", @"m_nsClientMsgId"]),
+           gLastAttemptInserted ? @"成功" : @"没成功");
     gSendAttemptIndex = index;
     return YES;
 }
@@ -753,9 +769,15 @@ static NSInteger gSendRotation = 0;        // 下一次该试第几种
             return;
         }
         if (index >= 0) {
-            gSendRotation = index + 1;
-            WXRLog(@"[send] ⚠️ 第 %ld 种方式 3 秒内没等到成功回调，下一条消息改试第 %ld 种",
-                   (long)index + 1, (long)(gSendRotation + 1));
+            if (gLastAttemptInserted) {
+                // 消息已经进了会话，只是没上传 —— 换方式只会多插一条重复气泡，没意义
+                WXRLog(@"[send] ⚠️ 消息已插入会话，但没等到上传成功回调；保持当前方式不换"
+                       @"（要修的是出站消息的字段，不是插入方法）");
+            } else {
+                gSendRotation = index + 1;
+                WXRLog(@"[send] ⚠️ 第 %ld 种方式连插入都没成功，下一条消息改试第 %ld 种",
+                       (long)index + 1, (long)(gSendRotation + 1));
+            }
         } else {
             WXRLog(@"[send] ⚠️ 3 秒内没等到发送成功回调，这条可能没发出去；"
                    @"请在微信里手动发一条消息，从 [probe] 日志看微信自己用的是哪个方法");

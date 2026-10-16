@@ -16,6 +16,8 @@
 
 /// 设置页/诊断里显示的一行状态
 + (NSString *)statusLine;
+/// 最近一条私聊消息的会话（设置页"测试发送"用）
++ (NSString *)lastPrivateSession;
 /// 清空会话冷却（设置页用）
 + (void)clearCooldown;
 /// 测试 AI 接口是否可用

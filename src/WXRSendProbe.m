@@ -69,11 +69,22 @@ static void WXRProbeSendFail(id self, SEL _cmd, id a1) {
 
 /* ---------------- 出站插入：看微信自己发消息时调哪个 ---------------- */
 
+static BOOL gOurCallInProgress = NO;
+
 static void WXRProbeNoteCall(NSString *selector, id a1, id a2, BOOL hasSecond) {
-    BOOL outgoing = WXRLooksOutgoing(a1) || WXRLooksOutgoing(a2);
-    if (outgoing) {
+    BOOL firstOutgoing = WXRLooksOutgoing(a1);
+    BOOL secondOutgoing = WXRLooksOutgoing(a2);
+    if (gOurCallInProgress) {
+        WXRLogVerbose(@"[probe] 我们自己调用了 %@（插入本地消息）", selector);
+        return;
+    }
+    if (firstOutgoing || secondOutgoing) {
         WXRLog(@"[probe] 微信自己发消息时调用了 %@：a1=%@ a2=%@", selector, WXRBriefArg(a1),
                hasSecond ? WXRBriefArg(a2) : @"(无)");
+        // 出站消息的真实字段，是我们构造 wrap 的唯一参照（少了字段就会"一直转圈发不出去"）
+        id wrap = secondOutgoing ? a2 : a1;
+        WXRLog(@"[probe] 出站消息的完整字段（照这个构造）：\n%@",
+               [WXRWeChat describeObject:wrap maxLength:2000]);
     } else {
         WXRLogVerbose(@"[probe] %@ 被调用（a1=%@）", selector, WXRBriefArg(a1));
     }
@@ -162,6 +173,18 @@ static void WXRProbeAddLocal4(id self, SEL _cmd, id a1, id a2, id a3, id a4) {
                      note:@"出站消息插入(AddLocalMsg 4 参数)"];
 
     WXRLog(@"[probe] 发送路径探针已安装：在微信里手动发一条消息，就能看出微信自己用的是哪个方法");
+}
+
++ (void)beginOurCall {
+    @synchronized ([self class]) {
+        gOurCallInProgress = YES;
+    }
+}
+
++ (void)endOurCall {
+    @synchronized ([self class]) {
+        gOurCallInProgress = NO;
+    }
 }
 
 + (void)noteSentContent:(NSString *)content {
