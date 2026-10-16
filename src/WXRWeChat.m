@@ -377,6 +377,167 @@ static NSUInteger WXRSelectorArity(NSString *selector) {
     return [[selector componentsSeparatedByString:@":"] count] - 1;
 }
 
+/* ---------------- 发送 ---------------- */
+
+// 列出对象的实例方法（含父类链）。
+// 注意：object_getClass(实例) 就是它的类对象，要传给 class_copyMethodList 的是这个；
+// 再套一层 object_getClass 就变成元类了，那样只能枚举到类方法（发送方法都是实例方法）。
+static NSArray<NSString *> *WXRInstanceSelectors(id object) {
+    NSMutableArray<NSString *> *out = [NSMutableArray array];
+    Class cls = object_getClass(object);
+    while (cls && cls != [NSObject class]) {
+        unsigned int count = 0;
+        Method *methods = class_copyMethodList(cls, &count);
+        for (unsigned int i = 0; i < count; i++) {
+            [out addObject:NSStringFromSelector(method_getName(methods[i]))];
+        }
+        if (methods) {
+            free(methods);
+        }
+        cls = class_getSuperclass(cls);
+    }
+    return out;
+}
+
+// 发文件/图片/红包那些别碰
+static BOOL WXRSelectorLooksLikeMedia(NSString *selector) {
+    NSString *lower = selector.lowercaseString;
+    NSArray<NSString *> *blocked = @[@"file", @"img", @"image", @"video", @"voice", @"audio", @"red",
+                                     @"pay", @"emoji", @"location", @"verify", @"invite", @"friend",
+                                     @"card", @"gift", @"sticker", @"game"];
+    for (NSString *word in blocked) {
+        if ([lower containsString:word]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+// 名字像"直接发文本"：含 send 且含 text/content
+static BOOL WXRSelectorLooksLikeSendText(NSString *selector) {
+    NSString *lower = selector.lowercaseString;
+    if (![lower containsString:@"send"] || WXRSelectorLooksLikeMedia(selector)) {
+        return NO;
+    }
+    return [lower containsString:@"text"] || [lower containsString:@"content"];
+}
+
+// 名字像"发 MsgWrap"：含 send 且含 msg
+static BOOL WXRSelectorLooksLikeSendWrap(NSString *selector) {
+    NSString *lower = selector.lowercaseString;
+    if (![lower containsString:@"send"] || WXRSelectorLooksLikeMedia(selector)) {
+        return NO;
+    }
+    return ![lower containsString:@"text"] && [lower containsString:@"msg"];
+}
+
+// 第一个参数标签听起来是"内容"吗？微信惯例是先内容后会话
+static BOOL WXRSelectorTakesContentFirst(NSString *selector) {
+    NSString *first = [[selector componentsSeparatedByString:@":"] firstObject].lowercaseString;
+    if ([first containsString:@"text"] || [first containsString:@"content"] || [first containsString:@"msg"]) {
+        return YES;
+    }
+    if ([first containsString:@"session"] || [first containsString:@"usr"] ||
+        [first containsString:@"user"] || [first containsString:@"chat"] || [first isEqualToString:@"to"]) {
+        return NO;
+    }
+    return YES;
+}
+
+// 优先"第二个参数像会话名"的，其次名字短的
+static NSArray<NSString *> *WXROrderedSendTextSelectors(NSArray<NSString *> *selectors) {
+    return [selectors sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+        NSString *la = a.lowercaseString;
+        NSString *lb = b.lowercaseString;
+        BOOL targetA = [la containsString:@"session"] || [la containsString:@"usr"] || [la containsString:@"user"];
+        BOOL targetB = [lb containsString:@"session"] || [lb containsString:@"usr"] || [lb containsString:@"user"];
+        if (targetA != targetB) {
+            return targetA ? NSOrderedAscending : NSOrderedDescending;
+        }
+        if (a.length != b.length) {
+            return a.length < b.length ? NSOrderedAscending : NSOrderedDescending;
+        }
+        return [a compare:b];
+    }];
+}
+
+// 造一条"发出去的文本消息"包装对象
+static id WXRMakeOutgoingTextWrap(NSString *text, NSString *session, NSString *from) {
+    Class wrapClass = objc_getClass("CMessageWrap");
+    if (!wrapClass) {
+        return nil;
+    }
+    id wrap = nil;
+    if ([wrapClass instancesRespondToSelector:NSSelectorFromString(@"initWithMsgType:")]) {
+        wrap = WXRCall1(WXRCall(wrapClass, @"alloc"), @"initWithMsgType:", @(1));
+    }
+    if (!wrap) {
+        wrap = WXRCall(WXRCall(wrapClass, @"alloc"), @"init");
+    }
+    if (!wrap) {
+        return nil;
+    }
+    WXRSetAny(wrap, WXRContentKeys(), text);
+    WXRSetAny(wrap, WXRTypeKeys(), @(1));                 // 1 = 文本
+    if (from.length) {
+        WXRSetAny(wrap, WXRFromKeys(), from);
+    }
+    WXRSetAny(wrap, WXRToKeys(), session);
+    WXRSetAny(wrap, WXRTimeKeys(), @([[NSDate date] timeIntervalSince1970]));
+    WXRSetAny(wrap, @[@"m_uiStatus", @"m_nStatus"], @(1));
+    WXRSetAny(wrap, @[@"m_uiUploadStatus", @"m_nUploadStatus"], @(0));
+    return wrap;
+}
+
++ (BOOL)trySendTextVia:(NSArray<NSString *> *)selectors
+               manager:(id)manager
+                  text:(NSString *)text
+               session:(NSString *)session {
+    for (NSString *selector in selectors) {
+        if (WXRSelectorArity(selector) != 2) {
+            continue;
+        }
+        if (![manager respondsToSelector:NSSelectorFromString(selector)]) {
+            continue;
+        }
+        BOOL contentFirst = WXRSelectorTakesContentFirst(selector);
+        WXRLog(@"[send] 尝试 %@（参数顺序：%@）", selector, contentFirst ? @"文本,会话" : @"会话,文本");
+        if (contentFirst) {
+            WXRCall2(manager, selector, text, session);
+        } else {
+            WXRCall2(manager, selector, session, text);
+        }
+        WXRLog(@"[send] 已调用 %@", selector);
+        return YES;
+    }
+    return NO;
+}
+
++ (BOOL)trySendWrapVia:(NSArray<NSString *> *)selectors manager:(id)manager wrap:(id)wrap {
+    if (!wrap) {
+        return NO;
+    }
+    for (NSString *selector in selectors) {
+        if (![manager respondsToSelector:NSSelectorFromString(selector)]) {
+            continue;
+        }
+        NSUInteger arity = WXRSelectorArity(selector);
+        if (arity == 1) {
+            WXRLog(@"[send] 尝试 %@（wrap）", selector);
+            WXRCall1(manager, selector, wrap);
+            WXRLog(@"[send] 已调用 %@", selector);
+            return YES;
+        }
+        if (arity == 2) {
+            WXRLog(@"[send] 尝试 %@（wrap,nil）", selector);
+            WXRCall2(manager, selector, wrap, nil);
+            WXRLog(@"[send] 已调用 %@", selector);
+            return YES;
+        }
+    }
+    return NO;
+}
+
 + (BOOL)sendText:(NSString *)text toSession:(NSString *)session {
     if (!text.length || !session.length) return NO;
     id manager = [self messageManager];
@@ -385,58 +546,70 @@ static NSUInteger WXRSelectorArity(NSString *selector) {
         return NO;
     }
 
-    // 策略 1：构造 CMessageWrap，交给微信自己的发送方法
-    Class wrapClass = objc_getClass("CMessageWrap");
-    if (wrapClass) {
-        id wrap = WXRCall(wrapClass, @"alloc");
-        wrap = WXRCall(wrap, @"init");
-        if (wrap) {
-            WXRSetAny(wrap, WXRContentKeys(), text);
-            WXRSetAny(wrap, WXRTypeKeys(), @(1));                       // 1 = 文本
-            WXRSetAny(wrap, WXRFromKeys(), [self selfUserName] ?: @"");
-            WXRSetAny(wrap, WXRToKeys(), session);
-            WXRSetAny(wrap, WXRTimeKeys(), @([[NSDate date] timeIntervalSince1970]));
-            WXRSetAny(wrap, @[@"m_uiStatus", @"m_nStatus"], @(1));
-            WXRSetAny(wrap, @[@"m_uiUploadStatus", @"m_nUploadStatus"], @(0));
-            for (NSString *sel in WXRSendMsgSelectors()) {
-                if (WXRSelectorArity(sel) != 1) continue;   // 只调「单参数收 MsgWrap」的方法
-                if ([manager respondsToSelector:NSSelectorFromString(sel)]) {
-                    WXRCall1(manager, sel, wrap);
-                    WXRLog(@"[send] 用 %@ 发出（会话=%@ 长度=%lu）", sel, session, (unsigned long)text.length);
-                    return YES;
-                }
-            }
+    // 自动发现：不再依赖硬编码名单，直接看这个微信版本里到底有哪些"像发消息"的方法
+    NSMutableArray<NSString *> *discoveredText = [NSMutableArray array];
+    NSMutableArray<NSString *> *discoveredWrap = [NSMutableArray array];
+    for (NSString *selector in WXRInstanceSelectors(manager)) {
+        if (WXRSelectorLooksLikeSendText(selector)) {
+            [discoveredText addObject:selector];
+        } else if (WXRSelectorLooksLikeSendWrap(selector)) {
+            [discoveredWrap addObject:selector];
         }
+    }
+    NSArray<NSString *> *textSelectors = WXROrderedSendTextSelectors(discoveredText);
+    // 单参数的 wrap 发送方法先试（最像微信原来的 SendMsg:，风险也最低）
+    NSArray<NSString *> *wrapSelectors = [discoveredWrap sortedArrayUsingComparator:
+        ^NSComparisonResult(NSString *a, NSString *b) {
+            NSUInteger arityA = WXRSelectorArity(a);
+            NSUInteger arityB = WXRSelectorArity(b);
+            if (arityA != arityB) {
+                return arityA < arityB ? NSOrderedAscending : NSOrderedDescending;
+            }
+            return [a compare:b];
+        }];
+    WXRLog(@"[send] 自动发现：发文本=%@；发 wrap=%@",
+           textSelectors.count ? [textSelectors componentsJoinedByString:@", "] : @"（无）",
+           wrapSelectors.count ? [wrapSelectors componentsJoinedByString:@", "] : @"（无）");
+
+    id wrap = WXRMakeOutgoingTextWrap(text, session, [self selfUserName]);
+    if (!wrap) {
+        WXRLog(@"[send] 没能构造 CMessageWrap，只能走「发文本」这一路");
     }
 
-    // 策略 2：直接调"发文本"方法，两种参数顺序都试
-    for (NSString *sel in WXRSendTextSelectors()) {
-        if (WXRSelectorArity(sel) != 2) continue;           // 只调「(文本, 会话)」这种双参数方法
-        if ([manager respondsToSelector:NSSelectorFromString(sel)]) {
-            WXRCall2(manager, sel, text, session);
-            WXRLog(@"[send] 用 %@ 发出（参数顺序 text,session）", sel);
-            return YES;
-        }
+    // 顺序：微信自己的"发文本" → 发 wrap → 固定候选名兜底
+    if ([self trySendTextVia:textSelectors manager:manager text:text session:session]) {
+        return YES;
     }
-    [[self shared] logSendDiagnostics];
+    if ([self trySendWrapVia:wrapSelectors manager:manager wrap:wrap]) {
+        return YES;
+    }
+    if ([self trySendTextVia:WXRSendTextSelectors() manager:manager text:text session:session]) {
+        return YES;
+    }
+    if ([self trySendWrapVia:WXRSendMsgSelectors() manager:manager wrap:wrap]) {
+        return YES;
+    }
+
+    [self logSendDiagnostics];
     return NO;
 }
 
 - (void)logSendDiagnostics {
     id manager = [[self class] messageManager];
-    if (!manager) return;
-    unsigned int count = 0;
-    Method *methods = class_copyMethodList(object_getClass(manager), &count);
-    NSMutableArray<NSString *> *names = [NSMutableArray array];
-    for (unsigned int i = 0; i < count; i++) {
-        NSString *name = NSStringFromSelector(method_getName(methods[i]));
-        if ([name.lowercaseString containsString:@"send"]) {
-            [names addObject:name];
+    if (!manager) {
+        return;
+    }
+    NSMutableArray<NSString *> *described = [NSMutableArray array];
+    for (NSString *selector in WXRInstanceSelectors(manager)) {
+        if ([selector.lowercaseString containsString:@"send"]) {
+            [described addObject:[NSString stringWithFormat:@"%@(%lu)", selector,
+                                  (unsigned long)WXRSelectorArity(selector)]];
         }
     }
-    if (methods) free(methods);
-    WXRLog(@"[send] %@ 上所有含 send 的方法：%@", NSStringFromClass([manager class]),
-           [names componentsJoinedByString:@", "]);
+    [described sortUsingSelector:@selector(compare:)];
+    WXRLog(@"[send] %@ 上含 send 的实例方法（名字(参数个数)）：%@",
+           NSStringFromClass(object_getClass(manager)),
+           [described componentsJoinedByString:@", "]);
 }
 
 /* ---------------- 收消息 ---------------- */

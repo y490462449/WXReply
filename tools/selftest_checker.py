@@ -20,8 +20,8 @@ MUTATIONS = [
     # 所以这里只列"能被静态检查发现"的错误类型。
     ("C 函数参数个数少传",
      "src/WXRWeChat.m",
-     "WXRCall2(manager, sel, text, session);",
-     "WXRCall2(manager, sel, text);"),
+     "WXRCall2(manager, selector, text, session);",
+     "WXRCall2(manager, selector, text);"),
     ("丢失 @end",
      "src/WXRSettings.m",
      "@end\n",

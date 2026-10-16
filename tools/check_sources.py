@@ -53,6 +53,19 @@ SINGLETON_ACCESSORS = (r"(?:shared|defaultCenter|sharedInstance|sharedCenter|"
 SINGLETON_DOT = re.compile(r"\[\s*(WXR\w+)\s+(" + SINGLETON_ACCESSORS + r")\s*\]\s*\.\s*([A-Za-z_]\w*)")
 NSOBJECT_DOT = {"description", "debugDescription", "hash", "class", "superclass", "self", "isProxy"}
 
+# 块参数名（^Ret(NSString *a, NSString *b)）会和同名局部变量串味，必须排除
+BLOCK_PARAMS = re.compile(r"\^\s*[A-Za-z_][\w\s\*<>,]*?\(\s*([^)]*)\)")
+
+
+def block_parameter_names(code):
+    names = set()
+    for match in BLOCK_PARAMS.finditer(code):
+        for part in match.group(1).split(","):
+            identifiers = re.findall(r"[A-Za-z_]\w*", part)
+            if identifiers:
+                names.add(identifiers[-1])
+    return names
+
 
 def collect_properties(text):
     """从 @interface 块里收集 @property 名字（按类分组）。
@@ -119,9 +132,11 @@ def typed_dot_variable_issues(path, code, declared, properties_by_class, supercl
             var_types.setdefault(var, set()).add(cls)
     if not var_types:
         return issues
+    # 块参数同名（比如块里也叫 b）会让类型判断失效，直接跳过这些名字
+    block_names = block_parameter_names(code)
     for var, classes in var_types.items():
         # 同名变量在同一个文件里出现在不同作用域/不同类型 → 无法安全判断，跳过（避免误报）
-        if len(classes) != 1:
+        if len(classes) != 1 or var in block_names:
             continue
         cls = next(iter(classes))
         known = set(properties_by_class.get(cls, set()))

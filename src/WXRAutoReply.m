@@ -164,9 +164,9 @@ static NSString *gLastStatus = @"还没触发过";
             }
         }
         if ([WXRWeChat sendText:reply toSession:session]) {
-            WXRLog(@"[reply] 已发送给 %@：%@", session, reply);
+            WXRLog(@"[reply] 已调用发送接口（会话=%@）：%@", session, reply);
         } else {
-            gLastStatus = @"生成了回复但发送失败（见日志）";
+            gLastStatus = @"生成了回复但没找到可用的发送接口（见日志 [send] 行）";
             WXRLog(@"[reply] 发送失败，内容：%@", reply);
         }
     });
