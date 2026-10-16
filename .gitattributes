@@ -1,0 +1,9 @@
+# 全部脚本/源码都用 LF，避免在 macOS 上因 CRLF 出问题
+* text=auto eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+*.m text eol=lf
+*.h text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.md text eol=lf

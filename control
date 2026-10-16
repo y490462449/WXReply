@@ -1,0 +1,10 @@
+Package: com.wxreply.tweak
+Name: 微信自动回复
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: 只做一件事：微信自动回复。无悬浮窗，设置入口在微信「我 -> 设置」里。
+Homepage: https://github.com/
+Maintainer: self
+Author: self
+Section: Tweaks
+Depends: firmware (>= 14.0)

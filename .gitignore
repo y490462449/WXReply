@@ -1,0 +1,16 @@
+# 构建产物
+build/
+*.dylib
+*.zip
+*.o
+
+# 工具自测产生的临时目录
+.build-selftest/
+.checker-mutations/
+__pycache__/
+*.pyc
+
+# 编辑器
+.DS_Store
+.vscode/
+.idea/

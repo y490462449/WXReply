@@ -1,0 +1,93 @@
+name: build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: 静态检查（不需要 macOS）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 括号配平、@end、声明与实现对应、给自家类发的 selector、C 函数参数个数、中文串引号、非法点语法
+      - name: 源码静态检查
+        run: python tools/check_sources.py .
+
+      # 证明检查器本身有效：故意注入错误，必须每一类都被抓出来
+      - name: 检查器变异自测
+        run: python tools/selftest_checker.py
+
+      # 不需要 macOS：用假 xcrun 验证构建脚本的语法与成功/失败路径
+      - name: 构建脚本自测
+        run: bash tools/selftest_build_scripts.sh
+
+  dylib:
+    name: 编译 dylib（TrollStore + TrollFools）
+    needs: lint
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 环境自检
+        run: |
+          set -x
+          sw_vers
+          xcode-select -p
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk iphoneos clang --version
+
+      # 编译日志同时写进 build-log.txt，失败也会作为 artifact 上传
+      - name: 编译 WXReply.dylib
+        run: |
+          set -o pipefail
+          mkdir -p build
+          bash scripts/build-dylib.sh 2>&1 | tee build-log.txt
+
+      - name: ad-hoc 签名副本 + 依赖检查
+        continue-on-error: true
+        run: |
+          cp build/WXReply.dylib build/WXReply-signed.dylib || true
+          brew install ldid || true
+          if command -v ldid >/dev/null 2>&1; then
+            ldid -S build/WXReply-signed.dylib && echo "已生成签名副本" || echo "签名失败，保留未签名副本"
+          else
+            echo "环境里没有 ldid，保留未签名副本（TrollFools 自己会签名）"
+          fi
+          echo "== dylib 依赖（应当只有系统库） =="
+          otool -L build/WXReply.dylib || true
+          if otool -L build/WXReply.dylib 2>/dev/null | grep -Eiq 'substrate|ellekit|libhooker|libsubstitute'; then
+            echo "::warning::dylib 链接了越狱专属库，TrollFools 下可能加载失败"
+          fi
+
+      - name: 打包 zip（有些注入流程用 zip 导入）
+        continue-on-error: true
+        run: |
+          cd build
+          zip -q WXReply.zip WXReply.dylib || true
+          ls -la
+
+      - name: 结果汇总
+        if: always()
+        run: |
+          echo "== build/ =="
+          ls -la build/ 2>/dev/null || echo "(build 目录不存在)"
+          echo "== 编译日志尾部 =="
+          tail -n 60 build-log.txt 2>/dev/null || echo "(没有日志)"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: WXReply-artifacts
+          if-no-files-found: ignore
+          path: |
+            build/*.dylib
+            build/*.zip
+            build-log.txt
