@@ -45,3 +45,4 @@ extern NSString *const WXRKeyVerboseLog;         // BOOL 详细日志
 extern NSString *const WXRKeyLogContent;         // BOOL 日志是否记录消息正文（默认关）
 extern NSString *const WXRKeyOverrideText;       // 候选名覆盖原文（适配不同微信版本）
 extern NSString *const WXRKeyOverrideMap;        // 解析后的候选名覆盖表
+extern NSString *const WXRKeySendStrategy;       // int 已确认可用的发送方式编号（-1 = 还没确定）

@@ -43,6 +43,7 @@ static pthread_mutex_t gPrefsLock = PTHREAD_MUTEX_INITIALIZER;
         WXRKeyLoadedNotice:       @NO,
         WXRKeyVerboseLog:         @NO,
         WXRKeyLogContent:         @NO,
+        WXRKeySendStrategy:       @(-1),
     };
 }
 

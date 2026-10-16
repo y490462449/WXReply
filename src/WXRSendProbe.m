@@ -103,6 +103,30 @@ static void WXRProbeAddMsg(id self, SEL _cmd, id a1, id a2) {
     }
 }
 
+static void (*gOrigModMsg)(id, SEL, id, id) = NULL;
+static void WXRProbeModMsg(id self, SEL _cmd, id a1, id a2) {
+    WXRProbeNoteCall(NSStringFromSelector(_cmd), a1, a2, YES);
+    if (gOrigModMsg) {
+        gOrigModMsg(self, _cmd, a1, a2);
+    }
+}
+
+static void (*gOrigResendMsg)(id, SEL, id, id) = NULL;
+static void WXRProbeResendMsg(id self, SEL _cmd, id a1, id a2) {
+    WXRProbeNoteCall(NSStringFromSelector(_cmd), a1, a2, YES);
+    if (gOrigResendMsg) {
+        gOrigResendMsg(self, _cmd, a1, a2);
+    }
+}
+
+static void (*gOrigAddLocal4)(id, SEL, id, id, id, id) = NULL;
+static void WXRProbeAddLocal4(id self, SEL _cmd, id a1, id a2, id a3, id a4) {
+    WXRProbeNoteCall(NSStringFromSelector(_cmd), a1, a2, YES);
+    if (gOrigAddLocal4) {
+        gOrigAddLocal4(self, _cmd, a1, a2, a3, a4);
+    }
+}
+
 @implementation WXRSendProbe
 
 + (void)install {
@@ -127,6 +151,15 @@ static void WXRProbeAddMsg(id self, SEL _cmd, id a1, id a2) {
     [WXRHook hookAnyClass:classes selector:@"AddMsg:MsgWrap:" isClassMethod:NO
               replacement:(IMP)WXRProbeAddMsg original:(IMP *)&gOrigAddMsg
                      note:@"消息插入(AddMsg)"];
+    [WXRHook hookAnyClass:classes selector:@"ModMsg:MsgWrap:" isClassMethod:NO
+              replacement:(IMP)WXRProbeModMsg original:(IMP *)&gOrigModMsg
+                     note:@"消息修改(ModMsg)"];
+    [WXRHook hookAnyClass:classes selector:@"ResendMsg:MsgWrap:" isClassMethod:NO
+              replacement:(IMP)WXRProbeResendMsg original:(IMP *)&gOrigResendMsg
+                     note:@"消息重发(ResendMsg)"];
+    [WXRHook hookAnyClass:classes selector:@"AddLocalMsg:MsgWrap:fixTime:NewMsgArriveNotify:" isClassMethod:NO
+              replacement:(IMP)WXRProbeAddLocal4 original:(IMP *)&gOrigAddLocal4
+                     note:@"出站消息插入(AddLocalMsg 4 参数)"];
 
     WXRLog(@"[probe] 发送路径探针已安装：在微信里手动发一条消息，就能看出微信自己用的是哪个方法");
 }

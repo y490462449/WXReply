@@ -72,6 +72,7 @@ static NSString *gLastStatus = @"还没触发过";
     [self rememberSession:session content:content sender:sender outgoing:outgoing];
 
     if (outgoing) {
+        WXRLogVerbose(@"[reply] 这是自己发出的消息，跳过自动回复");
         return;
     }
     if (!session.length) {

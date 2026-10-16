@@ -609,6 +609,46 @@ static BOOL WXRIsForwardingProxy(id object) {
     return NO;
 }
 
+// 出站消息可以试的几种调用方式（第一个参数是对象，所以试调用在 ABI 层面是安全的）。
+// 每个参数都用对象：会话名 或 @(0)。到底哪种管用，靠微信自己的成功回调验证。
+static NSArray<NSArray *> *WXROutgoingAttempts(void) {
+    return @[@[@"AddLocalMsg:MsgWrap:", @YES],
+             @[@"AddLocalMsg:MsgWrap:", @NO],
+             @[@"AddUniqueLocalMsg:MsgWrap:", @YES],
+             @[@"AddUniqueLocalMsg:MsgWrap:", @NO],
+             @[@"AddMsg:MsgWrap:", @YES],
+             @[@"AddMsg:MsgWrap:", @NO]];
+}
+
+static NSInteger gSendAttemptIndex = -1;   // 本次用的轮转编号（-1 = 不是轮转）
+static NSInteger gSendRotation = 0;        // 下一次该试第几种
+
++ (BOOL)invokeOutgoingAttemptAtIndex:(NSInteger)index
+                                 text:(NSString *)text
+                              session:(NSString *)session
+                                 wrap:(id)wrap {
+    NSArray<NSArray *> *attempts = WXROutgoingAttempts();
+    if (index < 0 || index >= (NSInteger)attempts.count || !wrap) {
+        return NO;
+    }
+    id manager = [self messageManager];
+    if (!manager) {
+        return NO;
+    }
+    NSString *selector = attempts[(NSUInteger)index][0];
+    BOOL useSession = [attempts[(NSUInteger)index][1] boolValue];
+    if (![manager respondsToSelector:NSSelectorFromString(selector)] && !WXRIsForwardingProxy(manager)) {
+        WXRLog(@"[send] 第 %ld 种方式 %@ 在这个版本里不存在，跳过", (long)index + 1, selector);
+        return NO;
+    }
+    id first = useSession ? session : @(0);
+    WXRLog(@"[send] 试第 %ld 种发送方式：%@（第一个参数=%@）", (long)index + 1, selector,
+           [first isKindOfClass:[NSString class]] ? first : [first description]);
+    WXRCall2(manager, selector, first, wrap);
+    gSendAttemptIndex = index;
+    return YES;
+}
+
 + (BOOL)sendText:(NSString *)text toSession:(NSString *)session {
     if (!text.length || !session.length) return NO;
     id manager = [self messageManager];
@@ -649,23 +689,43 @@ static BOOL WXRIsForwardingProxy(id object) {
         WXRLog(@"[send] 没能构造 CMessageWrap，只能走「发文本」这一路");
     }
 
-    // 顺序：先用户指定的候选名（含设置里的「候选名覆盖」），再自动发现。
-    // 自动发现可能会挑到同名的边角方法，所以只能当兜底。
+    gSendAttemptIndex = -1;
     BOOL invoked = NO;
-    if ([self trySendTextVia:WXRSendTextSelectors() manager:manager text:text session:session]) {
-        invoked = YES;
-    } else if ([self trySendWrapVia:WXRSendMsgSelectors() manager:manager wrap:wrap]) {
-        invoked = YES;
-    } else {
-        if (textSelectors.count || wrapSelectors.count) {
-            WXRLog(@"[send] 候选名都不匹配，改用自动发现（结果仅供参考）");
+
+    // ① 上次已被微信回调确认过的方式，优先用
+    NSArray<NSArray *> *attempts = WXROutgoingAttempts();
+    NSInteger working = [[WXRPrefs shared] integerForKey:WXRKeySendStrategy];
+    if (working >= 0 && working < (NSInteger)attempts.count) {
+        invoked = [self invokeOutgoingAttemptAtIndex:working text:text session:session wrap:wrap];
+        if (!invoked) {
+            WXRLog(@"[send] 上次确认的方式（第 %ld 种）这次调不通，回到轮转", (long)working + 1);
         }
+    }
+
+    // ② 用户显式指定的候选名（含设置里的「候选名覆盖」）
+    if (!invoked && [self trySendTextVia:WXRSendTextSelectors() manager:manager text:text session:session]) {
+        invoked = YES;
+    }
+    if (!invoked && [self trySendWrapVia:WXRSendMsgSelectors() manager:manager wrap:wrap]) {
+        invoked = YES;
+    }
+
+    // ③ 自动发现（名字相近的方法，结果仅供参考）
+    if (!invoked && (textSelectors.count || wrapSelectors.count)) {
+        WXRLog(@"[send] 候选名都不匹配，改用自动发现（结果仅供参考）");
         if ([self trySendTextVia:textSelectors manager:manager text:text session:session]) {
             invoked = YES;
         } else if ([self trySendWrapVia:wrapSelectors manager:manager wrap:wrap]) {
             invoked = YES;
         }
     }
+
+    // ④ 都失败 → 轮转试一种"出站插入"方式，靠微信自己的回调验证并记住
+    if (!invoked && attempts.count) {
+        NSInteger next = gSendRotation % (NSInteger)attempts.count;
+        invoked = [self invokeOutgoingAttemptAtIndex:next text:text session:session wrap:wrap];
+    }
+
     if (invoked) {
         [WXRSendProbe noteAttemptedContent:text];
         [self scheduleSendConfirmationCheck:text];
@@ -677,16 +737,28 @@ static BOOL WXRIsForwardingProxy(id object) {
 }
 
 // 调完发送接口后，用微信自己的"发出成功"回调来确认（3 秒窗口）。
-// 这样"已调用"和"真的发出去了"就分得清，不用靠猜。
+// 确认成功 → 记住这种方式；失败 → 下一条消息换下一种，逐条收敛。
 + (void)scheduleSendConfirmationCheck:(NSString *)text {
     NSTimeInterval attemptedAt = [[NSDate date] timeIntervalSince1970];
+    NSInteger index = gSendAttemptIndex;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if ([WXRSendProbe wasConfirmedAfter:attemptedAt content:text]) {
-            WXRLog(@"[send] ✅ 微信回调确认已发出：%@", text);
+            if (index >= 0) {
+                [[WXRPrefs shared] setInteger:index forKey:WXRKeySendStrategy];
+                WXRLog(@"[send] ✅ 已确认发出，并记住第 %ld 种发送方式", (long)index + 1);
+            } else {
+                WXRLog(@"[send] ✅ 微信回调确认已发出：%@", text);
+            }
+            return;
+        }
+        if (index >= 0) {
+            gSendRotation = index + 1;
+            WXRLog(@"[send] ⚠️ 第 %ld 种方式 3 秒内没等到成功回调，下一条消息改试第 %ld 种",
+                   (long)index + 1, (long)(gSendRotation + 1));
         } else {
             WXRLog(@"[send] ⚠️ 3 秒内没等到发送成功回调，这条可能没发出去；"
-                   @"请在微信里手动发一条消息，从探针日志看微信自己用的是哪个方法");
+                   @"请在微信里手动发一条消息，从 [probe] 日志看微信自己用的是哪个方法");
         }
     });
 }
@@ -766,15 +838,16 @@ static NSArray<NSString *> *WXRSendProbeSelectors(void) {
     [everything sortUsingSelector:@selector(compare:)];
     WXRLog(@"[send] %@ 上与发送相关的方法（名字(参数个数)），请把这一行发回：%@",
            className, relevant.count ? [relevant componentsJoinedByString:@", "] : @"（一个都没有）");
+    // 这两件事每次失败都要做：探明发送接口到底在哪个类上，并给出自救办法
+    [self probeSendInterfaces];
+    WXRLog(@"[send] 也可以自己在 设置 → 候选名覆盖 里填一行：sendtext=真实方法名（或 sendmsg=真实方法名）");
     if (!usable.count) {
-        // 一个能用的都没有 → 把整张方法表也打出来（截断），人工挑出真正的发送接口
+        // 一个像样的都没有 → 把整张方法表也打出来（截断），人工挑出真正的发送接口
         NSString *all = [everything componentsJoinedByString:@", "];
         if (all.length > 4000) {
             all = [[all substringToIndex:4000] stringByAppendingString:@" …(截断)"];
         }
         WXRLog(@"[send] %@ 的全部实例方法（用于人工确认真正的发送接口）：%@", className, all);
-        WXRLog(@"[send] 也可以自己在 设置 → 候选名覆盖 里填一行：sendtext=真实方法名（或 sendmsg=真实方法名）");
-        [self probeSendInterfaces];
     }
 }
 
