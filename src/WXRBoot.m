@@ -36,6 +36,7 @@ __attribute__((constructor)) static void WXRBoot(void) {
         dispatch_async(dispatch_get_main_queue(), ^{
             NSBundle *bundle = [NSBundle mainBundle];
             WXRLog(@"[init] ===== %@ %@ 启动 =====", WXR_NAME, WXR_VERSION);
+            WXRLog(@"[init] 构建 = %@", WXR_BUILD_STAMP);
             WXRLog(@"[init] 宿主=%@ 版本=%@", [bundle bundleIdentifier] ?: @"?",
                    [bundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"?");
 

@@ -33,8 +33,8 @@ static NSString *gLastStatus = @"还没触发过";
     WXRPrefs *prefs = [WXRPrefs shared];
     NSInteger ruleCount = [self parsedRules].count;
     NSString *ai = prefs.boolAIEnabled ? @"开" : @"关";
-    return [NSString stringWithFormat:@"%@ · 规则 %ld 条 · AI %@ · 最近：%@",
-            prefs.boolEnabled ? @"已开启" : @"未开启", (long)ruleCount, ai, gLastStatus];
+    return [NSString stringWithFormat:@"%@ · 规则 %ld 条 · AI %@ · %@ · 最近：%@",
+            prefs.boolEnabled ? @"已开启" : @"未开启", (long)ruleCount, ai, WXR_BUILD_STAMP, gLastStatus];
 }
 
 + (void)clearCooldown {

@@ -14,6 +14,8 @@
 #define WXR_VERSION   @"1.0.0"
 #define WXR_NAME      @"WXReply"
 #define WXR_LOG_FILE  @"wxreply.log"
+// 编译时间戳：用来一眼确认"手机上跑的到底是哪一版"（排查时最省时间的一条信息）
+#define WXR_BUILD_STAMP (@"built " __DATE__ " " __TIME__)
 
 /// 配置变化通知（收到后重新读 WXRPrefs 即可）
 extern NSString *const WXRPrefsChangedNotification;
