@@ -177,6 +177,8 @@ static NSInteger gHitCount = 0;
     NSString *senderText = (senderId.length && ![senderName isEqualToString:senderId])
         ? [NSString stringWithFormat:@"%@（%@）", senderName, senderId]
         : (senderName ?: @"?");
+    WXRLog(@"[monitor] 名字解析：群「%@」→「%@」；发送者「%@」→「%@」",
+           session ?: @"?", groupName ?: @"(未解析)", senderId ?: @"?", senderName ?: @"(未解析)");
     NSString *line = [NSString stringWithFormat:@"%@ 群=%@ 发送者=%@ 关键词=%@ 内容=%@",
                       [self timestampText], groupText, senderText, hit, content];
     gLastHit = line;

@@ -404,23 +404,47 @@ static id WXRContactValue(id object, NSArray<NSString *> *keys) {
     }
     id contact = WXRCall1(manager, @"getContactByName", userName);
     if (!contact) {
+        contact = WXRCall1(manager, @"getContactByNameFromCache", userName);
+    }
+    if (!contact) {
+        contact = WXRCall1(manager, @"getContactByNameFromDB", userName);
+    }
+    if (!contact) {
         return nil;
     }
     id nameValue = WXRContactValue(contact, @[@"m_nsRemark", @"m_nsNickName", @"m_nsAliasName",
                                              @"m_nsDisplayName", @"nickName", @"remark",
-                                             @"displayName", @"m_nsGroupName", @"groupName"]);
+                                             @"displayName", @"m_nsGroupName", @"groupName",
+                                             @"m_nsChatRoomName", @"m_nsRoomName",
+                                             @"m_nsGroupRemark", @"m_nsContactRemark"]);
     if ([nameValue isKindOfClass:[NSString class]] && [(NSString *)nameValue length]) {
         return (NSString *)nameValue;
     }
     // 没名字的群：微信界面显示成「群聊(N)」，这里也按成员数兜底，避免只显示一串 @chatroom
     if ([userName hasSuffix:@"@chatroom"]) {
         NSString *members = WXRStringValue(WXRReadIvarObject(contact, @"m_nsChatRoomMemList"));
+        NSInteger count = 0;
         if (members.length) {
-            NSInteger count = (NSInteger)[[members componentsSeparatedByString:@";"] count];
-            if (count > 0) {
-                return [NSString stringWithFormat:@"群聊(%ld)", (long)count];
+            count = (NSInteger)[[members componentsSeparatedByString:@";"] count];
+        }
+        if (count <= 0) {
+            // 成员列表读不到时，从群资料 XML 里数 <Member UserName=
+            NSString *roomData = WXRStringValue(WXRReadIvarObject(contact, @"m_nsChatRoomData"));
+            if (!roomData.length) {
+                roomData = WXRStringValue(WXRReadIvarObject(contact, @"m_nsChatRoomMemList"));
+            }
+            if (roomData.length) {
+                NSRegularExpression *rx =
+                    [NSRegularExpression regularExpressionWithPattern:@"<Member[^>]*UserName="
+                                                               options:0 error:NULL];
+                count = (NSInteger)[rx numberOfMatchesInString:roomData options:0
+                                                         range:NSMakeRange(0, roomData.length)];
             }
         }
+        if (count > 0) {
+            return [NSString stringWithFormat:@"群聊(%ld)", (long)count];
+        }
+        return @"群聊";
     }
     return nil;
 }
@@ -941,7 +965,11 @@ static id gLastAttemptWrap = nil;          // 上一次用的 wrap（留着回�
             NSString *key = [NSString stringWithUTF8String:name];
             id value = object_getIvar(object, ivars[i]);
             if ([value isKindOfClass:[NSString class]] && [(NSString *)value length]) {
-                [lines addObject:[NSString stringWithFormat:@"  %@ = %@", key, value]];
+                NSString *shown = (NSString *)value;
+                if (shown.length > 120) {
+                    shown = [[shown substringToIndex:120] stringByAppendingString:@"…(长值截断)"];
+                }
+                [lines addObject:[NSString stringWithFormat:@"  %@ = %@", key, shown]];
             }
         }
         if (ivars) {
@@ -979,9 +1007,40 @@ static id gLastAttemptWrap = nil;          // 上一次用的 wrap（留着回�
         id contact = WXRCall1(manager, selector, userName);
         [text appendFormat:@"    → %@\n", contact ? NSStringFromClass(object_getClass(contact)) : @"nil"];
         if (contact) {
-            [text appendString:@"    非空字符串字段（名字多半在这里）：\n"];
-            [text appendString:[self nonEmptyStringFieldsOfObject:contact maxLength:2500]];
+            [text appendString:@"    关键字段：\n"];
+            for (NSString *key in @[@"m_nsNickName", @"m_nsRemark", @"m_nsAliasName",
+                                     @"m_nsDisplayName", @"m_nsChatRoomName", @"m_nsRoomName",
+                                     @"m_nsGroupName", @"m_nsChatRoomMemList"]) {
+                id value = WXRReadIvarObject(contact, key);
+                NSString *shown = @"(读不到)";
+                if ([value isKindOfClass:[NSString class]]) {
+                    shown = [(NSString *)value length] ? (NSString *)value : @"(空字符串)";
+                    if (shown.length > 120) {
+                        shown = [[shown substringToIndex:120] stringByAppendingString:@"…(长值截断)"];
+                    }
+                } else if (value) {
+                    shown = [value description];
+                }
+                [text appendFormat:@"      %@ = %@\n", key, shown];
+            }
+            [text appendString:@"    其它非空字符串字段：\n"];
+            [text appendString:[self nonEmptyStringFieldsOfObject:contact maxLength:2000]];
             [text appendString:@"\n"];
+            // 群名可能在子对象里（m_ChatRoomDetail / m_ChatRoomData / m_nsChatRoomData）
+            for (NSString *key in @[@"m_ChatRoomDetail", @"m_ChatRoomData", @"m_nsChatRoomData"]) {
+                id child = WXRReadIvarObject(contact, key);
+                if (!child) {
+                    continue;
+                }
+                [text appendFormat:@"    子对象 %@ (%@)：\n", key,
+                 NSStringFromClass(object_getClass(child))];
+                if ([child isKindOfClass:[NSString class]]) {
+                    [text appendFormat:@"      %@\n", (NSString *)child];
+                } else {
+                    [text appendString:[self nonEmptyStringFieldsOfObject:child maxLength:1200]];
+                    [text appendString:@"\n"];
+                }
+            }
             break;
         }
     }
