@@ -2,6 +2,7 @@
 #import "WXRSettingsEntry.h"
 #import "WXRAutoReply.h"
 #import "WXRSendProbe.h"
+#import "WXRGroupMonitor.h"
 #import "WXROverrides.h"
 #import "WXRWeChat.h"
 #import "WXRPrefs.h"

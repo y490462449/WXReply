@@ -633,6 +633,29 @@ def gather_files(root):
     return headers, sources
 
 
+
+def missing_import_issues(path, raw, code, class_to_header, own_classes_in_file):
+    """用了别的文件里定义的 WXR 类，却没有 #import 对应头文件 —— 编译期就会报 undeclared identifier。"""
+    issues = []
+    imported = set(re.findall(r'#import\s+"([^"]+)"', raw))
+    used = set()
+    # [WXRXxx ...] 形式的类消息
+    for match in re.finditer(r'\[\s*(WXR[A-Z]\w+)\s*[\]A-Za-z_:]', code):
+        used.add(match.group(1))
+    # WXRXxx *变量 / WXRXxx 变量
+    for match in re.finditer(r'\b(WXR[A-Z]\w+)\s*(?:\*|\s+[a-z_])', code):
+        used.add(match.group(1))
+    for name in sorted(used):
+        if name in own_classes_in_file:
+            continue
+        header = class_to_header.get(name)
+        if not header:
+            continue        # 不是头文件里声明的我们自己的类（系统类/局部类/宏）
+        if header in imported:
+            continue
+        issues.append(f'{path.name}: 用了 {name} 但没有 #import "{header}"')
+    return issues
+
 def main():
     root = resolve_root(sys.argv[1] if len(sys.argv) > 1 else r"E:\DEB\WXRit")
     src = root / "src"
@@ -677,7 +700,22 @@ def main():
             if selector not in implemented.get(name, {}):
                 issues.append(f"{name}: 声明了 {selector} 但没有实现")
 
+    # 类 → 声明它的头文件（用于"漏 import"检查）
+    class_to_header = {}
+    for path in headers:
+        for match in re.finditer(r"@interface\s+(WXR\w+)\s*:", texts[path]):
+            class_to_header.setdefault(match.group(1), path.name)
+
     own_classes = set(declared) | set(implemented)
+
+    for path in sources:
+        own_in_file = set()
+        for name, _methods in find_interfaces(texts[path]).items():
+            own_in_file.add(name)
+        for name, _methods in find_implementations(texts[path]).items():
+            own_in_file.add(name)
+        issues += missing_import_issues(path, texts[path], codes[path], class_to_header, own_in_file)
+
     declared_c_functions = set()
     for path in headers:
         declared_c_functions |= set(re.findall(r"\b(WXR[A-Z]\w+)\s*\(", texts[path]))
