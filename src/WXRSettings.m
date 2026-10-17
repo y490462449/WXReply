@@ -210,7 +210,33 @@ typedef NS_ENUM(NSInteger, WXRRowKind) {
     test.action = ^{ [weakSelf runAITest]; };
     [ai addObject:test];
     [sections addObject:ai];
-    /* ---- 4. 入口与诊断 ---- */
+
+    /* ---- 4. 群消息监控 ---- */
+    NSMutableArray<WXRRow *> *monitor = [NSMutableArray array];
+    [monitor addObject:[WXRRow row:@"监控群消息关键词" kind:WXRRowKindSwitch key:WXRKeyMonitorEnabled]];
+    WXRRow *keywords = [WXRRow row:@"关键词（每行一个）" kind:WXRRowKindText key:WXRKeyMonitorKeywords];
+    keywords.detail = [self shortDetail:[prefs stringForKey:WXRKeyMonitorKeywords]];
+    [monitor addObject:keywords];
+    [monitor addObject:[WXRRow row:@"命中后转发给我" kind:WXRRowKindSwitch key:WXRKeyMonitorForward]];
+    [monitor addObject:[WXRRow row:@"记录命中" kind:WXRRowKindSwitch key:WXRKeyMonitorRecord]];
+    WXRRow *monitorStatus = [WXRRow row:@"监控状态" kind:WXRRowKindInfo key:nil];
+    monitorStatus.detail = [WXRGroupMonitor statusLine];
+    [monitor addObject:monitorStatus];
+    WXRRow *hitsRow = [WXRRow row:@"查看最近命中" kind:WXRRowKindAction key:nil];
+    hitsRow.action = ^{
+        [WXRSettings presentTextPageWithTitle:@"群关键词命中记录"
+                                         text:[WXRGroupMonitor recentHitsText]];
+    };
+    [monitor addObject:hitsRow];
+    WXRRow *forwardTestRow = [WXRRow row:@"转发测试（发给我自己）" kind:WXRRowKindAction key:nil];
+    forwardTestRow.action = ^{
+        [WXRGroupMonitor testForwardLastHit];
+        [weakSelf showMessage:@"已尝试转发一条测试消息到你自己，请看你自己那个聊天窗口。"];
+    };
+    [monitor addObject:forwardTestRow];
+    [sections addObject:monitor];
+
+    /* ---- 5. 入口与诊断 ---- */
     NSMutableArray<WXRRow *> *diag = [NSMutableArray array];
     [diag addObject:[WXRRow row:@"长按标签栏打开设置" kind:WXRRowKindSwitch key:WXRKeyTabBarLongPress]];
     WXRRow *status = [WXRRow row:@"运行状态" kind:WXRRowKindInfo key:nil];
@@ -285,7 +311,7 @@ typedef NS_ENUM(NSInteger, WXRRowKind) {
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    NSArray<NSString *> *titles = @[@"自动回复", @"回复内容", @"AI 回复（可选）", @"入口与诊断"];
+    NSArray<NSString *> *titles = @[@"自动回复", @"回复内容", @"AI 回复（可选）", @"群消息监控", @"入口与诊断"];
     return section < (NSInteger)titles.count ? titles[(NSUInteger)section] : nil;
 }
 

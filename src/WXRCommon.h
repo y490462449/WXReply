@@ -38,6 +38,12 @@ extern NSString *const WXRKeyAIMaxLength;        // int 回复最大字数
 extern NSString *const WXRKeyAITemperature;      // double
 extern NSString *const WXRKeyAIContextMessages;  // int 带上文条数
 
+/* ---------------- 群消息监控 ---------------- */
+extern NSString *const WXRKeyMonitorEnabled;     // BOOL 监控群消息里的关键词
+extern NSString *const WXRKeyMonitorKeywords;    // 文本 关键词，一行一个（也支持逗号分隔）
+extern NSString *const WXRKeyMonitorForward;     // BOOL 命中后转发到本人微信
+extern NSString *const WXRKeyMonitorRecord;      // BOOL 命中记录写入文件
+
 /* ---------------- 入口与诊断 ---------------- */
 extern NSString *const WXRKeyTabBarLongPress;    // BOOL 长按底部标签栏也能进设置（设置页入口的兜底）
 extern NSString *const WXRKeyLoadedNotice;       // BOOL 首次加载提示是否已弹过

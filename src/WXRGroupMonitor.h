@@ -1,0 +1,17 @@
+#pragma once
+#import <Foundation/Foundation.h>
+
+/// 群消息监控：群聊里命中关键词 → 记录 + 转发到本人微信。
+///
+/// 关键词在设置里一行一个（也支持逗号分隔），命中任意一个就触发。
+@interface WXRGroupMonitor : NSObject
+
++ (void)start;
+/// 设置页显示的一行状态
++ (NSString *)statusLine;
+/// 最近命中的记录（文本，给设置页看）
++ (NSString *)recentHitsText;
+/// 把最近一次命中（或一条测试消息）转发给自己，用来验证转发链路
++ (void)testForwardLastHit;
+
+@end

@@ -25,3 +25,7 @@ NSString *const WXRKeyLogContent         = @"log.content";
 NSString *const WXRKeyOverrideText       = @"override.text";
 NSString *const WXRKeyOverrideMap        = @"override.map";
 NSString *const WXRKeySendStrategy       = @"send.strategy";
+NSString *const WXRKeyMonitorEnabled     = @"monitor.enabled";
+NSString *const WXRKeyMonitorKeywords    = @"monitor.keywords";
+NSString *const WXRKeyMonitorForward     = @"monitor.forward";
+NSString *const WXRKeyMonitorRecord      = @"monitor.record";

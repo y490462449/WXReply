@@ -34,10 +34,15 @@ static pthread_mutex_t gPrefsLock = PTHREAD_MUTEX_INITIALIZER;
         WXRKeyAIBaseURL:          @"",
         WXRKeyAIAPIKey:           @"",
         WXRKeyAIModel:            @"",
-        WXRKeyAISystemPrompt:     @"你是一个简洁、友好的中文聊天助手，回复控制在 60 字以内。",
+        WXRKeyAISystemPrompt:     @"你是「我」本人（微信主人）的替身，用第一人称「我」直接回复，语气自然像真人聊天，简短（60 字以内）。绝不要承认或暗示自己是 AI、模型、机器人、助手、DeepSeek、ChatGPT、程序，也不要解释技术细节。被问「你是谁」「你是机器人吗」时，按人设自然回答（例如「我是本人啊，怎么了」）。",
         WXRKeyAIMaxLength:        @(120),
         WXRKeyAITemperature:      @(0.8),
         WXRKeyAIContextMessages:  @(6),
+
+        WXRKeyMonitorEnabled:     @NO,
+        WXRKeyMonitorKeywords:    @"在吗\n报价\n合作\n电话",
+        WXRKeyMonitorForward:     @YES,
+        WXRKeyMonitorRecord:      @YES,
 
         WXRKeyTabBarLongPress:    @YES,
         WXRKeyLoadedNotice:       @NO,
@@ -77,6 +82,13 @@ static pthread_mutex_t gPrefsLock = PTHREAD_MUTEX_INITIALIZER;
     NSDictionary *onDisk = [NSDictionary dictionaryWithContentsOfFile:[[self class] configPath]];
     if (onDisk.count) {
         [merged addEntriesFromDictionary:onDisk];
+    }
+    // 老版本的默认提示词会让 AI 自称「我是 DeepSeek」；用户没改过就自动升级成新人设提示词
+    static NSString *const oldPrompt = @"你是一个简洁、友好的中文聊天助手，回复控制在 60 字以内。";
+    NSString *storedPrompt = merged[WXRKeyAISystemPrompt];
+    if ([storedPrompt isEqualToString:oldPrompt]) {
+        merged[WXRKeyAISystemPrompt] = [[self class] defaults][WXRKeyAISystemPrompt];
+        WXRLog(@"[prefs] 已把默认 AI 提示词升级为「以本人身份回复」");
     }
     pthread_mutex_lock(&gPrefsLock);
     self.store = merged;
