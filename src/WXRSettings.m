@@ -223,6 +223,12 @@ typedef NS_ENUM(NSInteger, WXRRowKind) {
     WXRRow *monitorStatus = [WXRRow row:@"监控状态" kind:WXRRowKindInfo key:nil];
     monitorStatus.detail = [WXRGroupMonitor statusLine];
     [monitor addObject:monitorStatus];
+    WXRRow *monitorDiagRow = [WXRRow row:@"群监控自检（为什么没触发）" kind:WXRRowKindAction key:nil];
+    monitorDiagRow.action = ^{
+        [WXRSettings presentTextPageWithTitle:@"群监控自检"
+                                         text:[WXRGroupMonitor diagnosticText]];
+    };
+    [monitor addObject:monitorDiagRow];
     WXRRow *hitsRow = [WXRRow row:@"查看最近命中" kind:WXRRowKindAction key:nil];
     hitsRow.action = ^{
         [WXRSettings presentTextPageWithTitle:@"群关键词命中记录"

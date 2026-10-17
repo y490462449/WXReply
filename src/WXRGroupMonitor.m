@@ -134,9 +134,9 @@ static NSInteger gHitCount = 0;
         senderId = sender;      // 取不到真实发送者时的兜底
     }
     NSString *selfName = [WXRWeChat selfUserName];
-    if (selfName.length && [senderId isEqualToString:selfName]) {
-        return;      // 自己发的（比如我们转发出去的那条）不算
-    }
+    // 注意：这里【不】跳过自己发的群消息 ——
+    //   1) 自己发消息测试是最方便的方式，跳过会让功能看起来"失效"；
+    //   2) 转发目标是私聊（自己），不会回到群消息管线，所以没有循环风险。
     NSInteger localID = [WXRWeChat localIDOfWrap:wrap];
     NSString *dedupeKey = [NSString stringWithFormat:@"%@#%ld", session ?: @"", (long)localID];
     @synchronized (gSeen) {
@@ -150,11 +150,13 @@ static NSInteger gHitCount = 0;
     }
     NSString *hit = [self matchedKeywordIn:content];
     if (!hit.length) {
+        WXRLogVerbose(@"[monitor] 群消息未命中：群=%@ 发送者=%@ 内容=%@",
+                      session ?: @"?", senderId ?: @"?", content);
         return;
     }
 
     // 名字解析：群名 + 发送者昵称；解析不到就退回 ID，保证信息不丢
-    NSString *senderName = [WXRWeChat displayNameForUser:senderId];
+    NSString *senderName = [self cachedNameForUser:senderId];
     if (!senderName.length) {
         id pushTitle = WXRValueAny(wrap, @[@"m_nsPushTitle", @"m_nsDisplayName"]);
         if ([pushTitle isKindOfClass:[NSString class]] && [pushTitle length]) {
@@ -164,7 +166,7 @@ static NSInteger gHitCount = 0;
     if (!senderName.length) {
         senderName = senderId ?: @"?";
     }
-    NSString *groupName = [WXRWeChat displayNameForUser:session];
+    NSString *groupName = [self cachedNameForUser:session];
     NSString *groupText = groupName.length
         ? [NSString stringWithFormat:@"%@（%@）", groupName, session]
         : (session ?: @"?");
@@ -189,6 +191,54 @@ static NSInteger gHitCount = 0;
         BOOL sent = [WXRWeChat sendText:text toSession:selfName];
         WXRLog(@"[monitor] 转发给自己：%@", sent ? @"已调用发送" : @"没有可用的发送接口");
     }
+}
+
+// 通讯录查名字比较贵，缓存一下（同一个群/好友多次命中时只查一次）
++ (NSString *)cachedNameForUser:(NSString *)userName {
+    if (!userName.length) {
+        return nil;
+    }
+    static NSMutableDictionary<NSString *, NSString *> *cache = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cache = [NSMutableDictionary dictionary];
+    });
+    @synchronized (cache) {
+        NSString *cached = cache[userName];
+        if (cached.length) {
+            return cached;
+        }
+    }
+    NSString *name = [WXRWeChat displayNameForUser:userName];
+    if (name.length) {
+        @synchronized (cache) {
+            if (cache.count > 800) {
+                [cache removeAllObjects];
+            }
+            cache[userName] = name;
+        }
+    }
+    return name;
+}
+
+/// 自检文本：一眼看出监控为什么没触发
++ (NSString *)diagnosticText {
+    WXRPrefs *prefs = [WXRPrefs shared];
+    NSArray<NSString *> *words = [self keywords];
+    NSMutableString *text = [NSMutableString string];
+    [text appendFormat:@"监控开关：%@\n", [prefs boolForKey:WXRKeyMonitorEnabled] ? @"开" : @"关（这是最常见的失效原因）"];
+    [text appendFormat:@"命中后转发：%@\n", [prefs boolForKey:WXRKeyMonitorForward] ? @"开" : @"关"];
+    [text appendFormat:@"记录命中：%@\n", [prefs boolForKey:WXRKeyMonitorRecord] ? @"开" : @"关"];
+    [text appendFormat:@"关键词 %lu 个：%@\n", (unsigned long)words.count,
+     words.count ? [words componentsJoinedByString:@" / "] : @"（空！请在设置里填关键词）"];
+    [text appendFormat:@"消息管线已挂上：%@\n", [WXRWeChat messageHooksInstalled] ? @"是" : @"否（重启微信试试）"];
+    [text appendFormat:@"消息服务：%@\n", [WXRWeChat messageManager] ? @"已获取" : @"还没获取到（等收到一条消息后会自动获取）"];
+    [text appendFormat:@"自己身份：%@\n", [WXRWeChat selfUserName] ?: @"未解析"];
+    [text appendFormat:@"本次命中次数：%ld\n", (long)gHitCount];
+    [text appendString:@"\n最近一次命中：\n"];
+    [text appendString:gLastHit.length ? gLastHit : @"（还没有命中过）"];
+    [text appendString:@"\n\n提示：命中时日志里会有 [monitor] 开头的行；打开「详细日志」还能看到每条群消息是否命中。"];
+    return text;
 }
 
 + (void)testForwardLastHit {

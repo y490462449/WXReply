@@ -13,5 +13,7 @@
 + (NSString *)recentHitsText;
 /// 把最近一次命中（或一条测试消息）转发给自己，用来验证转发链路
 + (void)testForwardLastHit;
+/// 自检文本：开关/关键词/管线状态/命中情况，用来看"为什么没触发"
++ (NSString *)diagnosticText;
 
 @end
