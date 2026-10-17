@@ -656,6 +656,32 @@ def missing_import_issues(path, raw, code, class_to_header, own_classes_in_file)
         issues.append(f'{path.name}: 用了 {name} 但没有 #import "{header}"')
     return issues
 
+
+def forward_use_issues(path, code):
+    """同一个文件里，static C 函数在定义之前被使用，又没有前向声明 —— C99 会报 implicit declaration。"""
+    issues = []
+    code_lines = code.split("\n")
+    def_line = {}
+    for i, line in enumerate(code_lines):
+        for match in re.finditer(r'\bstatic\s+[\w\s\*]+?\b(WXR[A-Z]\w+)\s*\([^;{]*\)\s*\{', line):
+            def_line.setdefault(match.group(1), i)
+    forward_declared = set()
+    for line in code_lines:
+        for match in re.finditer(r'\bstatic\s+[\w\s\*]+?\b(WXR[A-Z]\w+)\s*\([^;{]*\)\s*;', line):
+            forward_declared.add(match.group(1))
+    for i, line in enumerate(code_lines):
+        if re.match(r'^\s*static\b', line):
+            continue        # 声明/定义行本身
+        for match in re.finditer(r'\b(WXR[A-Z]\w+)\s*\(', line):
+            name = match.group(1)
+            if name not in def_line or name in forward_declared:
+                continue
+            if i >= def_line[name]:
+                continue
+            issues.append(f"{path.name}:{i + 1} C 函数 {name} 在定义之前被使用（需要前向声明）")
+            break
+    return issues
+
 def main():
     root = resolve_root(sys.argv[1] if len(sys.argv) > 1 else r"E:\DEB\WXRit")
     src = root / "src"
@@ -715,6 +741,9 @@ def main():
         for name, _methods in find_implementations(texts[path]).items():
             own_in_file.add(name)
         issues += missing_import_issues(path, texts[path], codes[path], class_to_header, own_in_file)
+
+    for path in sources:
+        issues += forward_use_issues(path, codes[path])
 
     declared_c_functions = set()
     for path in headers:

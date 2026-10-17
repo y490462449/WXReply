@@ -359,6 +359,40 @@ static id gObservedMessageManager = nil;
     return b.selfDisplayName ?: @"";
 }
 
+// C 函数必须先声明后使用（WXRStringValue 定义在下面，这里前向声明一下）
+static NSString *WXRStringValue(id value);
+
+// 微信的 CContact 禁用了 KVC 的直接 ivar 访问（valueForKey: 一律抛异常 → nil），
+// 但直接读 ivar 是好的，所以这里专门用 object_getIvar 读（含父类链）。
+static id WXRReadIvarObject(id object, NSString *name) {
+    if (!object || !name.length) {
+        return nil;
+    }
+    Class cls = object_getClass(object);
+    while (cls && cls != [NSObject class]) {
+        Ivar ivar = class_getInstanceVariable(cls, name.UTF8String);
+        if (ivar) {
+            const char *type = ivar_getTypeEncoding(ivar);
+            if (type && type[0] == '@') {
+                return object_getIvar(object, ivar);
+            }
+            return nil;      // 非对象类型不在这里读
+        }
+        cls = class_getSuperclass(cls);
+    }
+    return nil;
+}
+
+static id WXRContactValue(id object, NSArray<NSString *> *keys) {
+    for (NSString *key in keys) {
+        id value = WXRReadIvarObject(object, key);
+        if (value) {
+            return value;
+        }
+    }
+    return nil;
+}
+
 // 群名/好友名字解析：备注优先，其次群名/昵称/别名；查不到返回 nil
 + (NSString *)displayNameForUser:(NSString *)userName {
     if (!userName.length) {
@@ -372,16 +406,15 @@ static id gObservedMessageManager = nil;
     if (!contact) {
         return nil;
     }
-    for (NSString *key in @[@"m_nsRemark", @"m_nsNickName", @"m_nsAliasName", @"m_nsDisplayName",
-                            @"nickName", @"remark", @"displayName", @"m_nsGroupName", @"groupName"]) {
-        id value = WXRValueAny(contact, @[key]);
-        if ([value isKindOfClass:[NSString class]] && [(NSString *)value length]) {
-            return (NSString *)value;
-        }
+    id nameValue = WXRContactValue(contact, @[@"m_nsRemark", @"m_nsNickName", @"m_nsAliasName",
+                                             @"m_nsDisplayName", @"nickName", @"remark",
+                                             @"displayName", @"m_nsGroupName", @"groupName"]);
+    if ([nameValue isKindOfClass:[NSString class]] && [(NSString *)nameValue length]) {
+        return (NSString *)nameValue;
     }
     // 没名字的群：微信界面显示成「群聊(N)」，这里也按成员数兜底，避免只显示一串 @chatroom
     if ([userName hasSuffix:@"@chatroom"]) {
-        NSString *members = WXRStringValue(WXRValueAny(contact, @[@"m_nsChatRoomMemList"]));
+        NSString *members = WXRStringValue(WXRReadIvarObject(contact, @"m_nsChatRoomMemList"));
         if (members.length) {
             NSInteger count = (NSInteger)[[members componentsSeparatedByString:@";"] count];
             if (count > 0) {
@@ -906,13 +939,9 @@ static id gLastAttemptWrap = nil;          // 上一次用的 wrap（留着回�
                 continue;
             }
             NSString *key = [NSString stringWithUTF8String:name];
-            @try {
-                id value = [object valueForKey:key];
-                if ([value isKindOfClass:[NSString class]] && [(NSString *)value length]) {
-                    [lines addObject:[NSString stringWithFormat:@"  %@ = %@", key, value]];
-                }
-            } @catch (NSException *e) {
-                // 读不到就跳过
+            id value = object_getIvar(object, ivars[i]);
+            if ([value isKindOfClass:[NSString class]] && [(NSString *)value length]) {
+                [lines addObject:[NSString stringWithFormat:@"  %@ = %@", key, value]];
             }
         }
         if (ivars) {
