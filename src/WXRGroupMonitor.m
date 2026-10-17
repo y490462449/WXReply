@@ -135,7 +135,6 @@ static NSInteger gHitCount = 0;
     if (!senderId.length) {
         senderId = sender;      // 取不到真实发送者时的兜底
     }
-    NSString *selfName = [WXRWeChat selfUserName];
     // 注意：这里【不】跳过自己发的群消息 ——
     //   1) 自己发消息测试是最方便的方式，跳过会让功能看起来"失效"；
     //   2) 转发目标是私聊（自己），不会回到群消息管线，所以没有循环风险。
@@ -159,43 +158,75 @@ static NSInteger gHitCount = 0;
         return;
     }
 
-    // 名字解析：群名 + 发送者昵称；解析不到就退回 ID，保证信息不丢
-    NSString *senderName = [self cachedNameForUser:senderId];
-    if (!senderName.length) {
-        id pushTitle = WXRValueAny(wrap, @[@"m_nsPushTitle", @"m_nsDisplayName"]);
-        if ([pushTitle isKindOfClass:[NSString class]] && [pushTitle length]) {
-            senderName = (NSString *)pushTitle;
+    // 名字解析 + 记录 + 转发都放到主线程做；微信刚启动时通讯录服务可能还没就绪，
+    // 解析不到会自动重试几次，避免把「群名/昵称」永久显示成 ID。
+    [self deliverReminderForSession:session senderId:senderId content:content hit:hit wrap:wrap attempt:0];
+}
+
++ (void)deliverReminderForSession:(NSString *)session
+                         senderId:(NSString *)senderId
+                          content:(NSString *)content
+                              hit:(NSString *)hit
+                             wrap:(id)wrap
+                          attempt:(NSInteger)attempt {
+    void (^work)(void) = ^{
+        WXRPrefs *prefs = [WXRPrefs shared];
+        NSString *senderName = [self cachedNameForUser:senderId];
+        if (!senderName.length) {
+            id pushTitle = WXRValueAny(wrap, @[@"m_nsPushTitle", @"m_nsDisplayName"]);
+            if ([pushTitle isKindOfClass:[NSString class]] && [pushTitle length]) {
+                senderName = (NSString *)pushTitle;
+            }
         }
-    }
-    if (!senderName.length) {
-        senderName = senderId ?: @"?";
-    }
-    NSString *groupName = [self cachedNameForUser:session];
-    NSString *groupText = groupName.length
-        ? [NSString stringWithFormat:@"%@（%@）", groupName, session]
-        : (session ?: @"?");
-    NSString *senderText = (senderId.length && ![senderName isEqualToString:senderId])
-        ? [NSString stringWithFormat:@"%@（%@）", senderName, senderId]
-        : (senderName ?: @"?");
-    WXRLog(@"[monitor] 名字解析：群「%@」→「%@」；发送者「%@」→「%@」",
-           session ?: @"?", groupName ?: @"(未解析)", senderId ?: @"?", senderName ?: @"(未解析)");
-    NSString *line = [NSString stringWithFormat:@"%@ 群=%@ 发送者=%@ 关键词=%@ 内容=%@",
-                      [self timestampText], groupText, senderText, hit, content];
-    gLastHit = line;
-    gHitCount++;
-    WXRLog(@"[monitor] 命中关键词「%@」：%@", hit, line);
-
-    if ([prefs boolForKey:WXRKeyMonitorRecord]) {
-        [self appendRecord:line];
-    }
-
-    if ([prefs boolForKey:WXRKeyMonitorForward]) {
-        NSString *shortContent = content.length > 400 ? [content substringToIndex:400] : content;
-        NSString *text = [NSString stringWithFormat:
-                          @"【群关键词提醒】\n群：%@\n发送者：%@\n关键词：%@\n时间：%@\n内容：%@",
-                          groupText, senderText, hit, [self timestampText], shortContent];
-        BOOL sent = [WXRWeChat sendText:text toSession:selfName];
-        WXRLog(@"[monitor] 转发给自己：%@", sent ? @"已调用发送" : @"没有可用的发送接口");
+        NSString *groupName = [self cachedNameForUser:session];
+        if ((!groupName.length || !senderName.length) && attempt < 3) {
+            WXRLogVerbose(@"[monitor] 名字还没解析出来（第 %ld 次尝试），300ms 后重试",
+                          (long)attempt + 1);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                [self deliverReminderForSession:session senderId:senderId content:content
+                                            hit:hit wrap:wrap attempt:attempt + 1];
+            });
+            return;
+        }
+        if (!senderName.length) {
+            senderName = senderId ?: @"?";
+        }
+        NSString *groupText = groupName.length
+            ? [NSString stringWithFormat:@"%@（%@）", groupName, session]
+            : (session ?: @"?");
+        NSString *senderText = (senderId.length && ![senderName isEqualToString:senderId])
+            ? [NSString stringWithFormat:@"%@（%@）", senderName, senderId]
+            : (senderName ?: @"?");
+        WXRLog(@"[monitor] 名字解析：群「%@」→「%@」；发送者「%@」→「%@」",
+               session ?: @"?", groupName ?: @"(未解析)", senderId ?: @"?", senderName ?: @"(未解析)");
+        if (!groupName.length) {
+            id manager = [WXRWeChat contactManager];
+            id contact = manager ? WXRCall1(manager, @"getContactByName", session) : nil;
+            WXRLog(@"[monitor] 群名解析失败原因：contactManager=%@，getContactByName=%@，群=%@",
+                   manager ? @"有" : @"nil", contact ? @"有" : @"nil", session ?: @"?");
+        }
+        NSString *line = [NSString stringWithFormat:@"%@ 群=%@ 发送者=%@ 关键词=%@ 内容=%@",
+                          [self timestampText], groupText, senderText, hit, content];
+        gLastHit = line;
+        gHitCount++;
+        WXRLog(@"[monitor] 命中关键词「%@」：%@", hit, line);
+        if ([prefs boolForKey:WXRKeyMonitorRecord]) {
+            [self appendRecord:line];
+        }
+        if ([prefs boolForKey:WXRKeyMonitorForward]) {
+            NSString *shortContent = content.length > 400 ? [content substringToIndex:400] : content;
+            NSString *text = [NSString stringWithFormat:
+                              @"【群关键词提醒】\n群：%@\n发送者：%@\n关键词：%@\n时间：%@\n内容：%@",
+                              groupText, senderText, hit, [self timestampText], shortContent];
+            BOOL sent = [WXRWeChat sendText:text toSession:[WXRWeChat selfUserName]];
+            WXRLog(@"[monitor] 转发给自己：%@", sent ? @"已调用发送" : @"没有可用的发送接口");
+        }
+    };
+    if ([NSThread isMainThread]) {
+        work();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), work);
     }
 }
 
