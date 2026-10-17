@@ -15,5 +15,7 @@
 + (void)testForwardLastHit;
 /// 自检文本：开关/关键词/管线状态/命中情况，用来看"为什么没触发"
 + (NSString *)diagnosticText;
+/// 名字解析诊断（只读）：把结果发回给维护者即可补全群名/昵称
++ (NSString *)nameResolutionDiagnostic;
 
 @end

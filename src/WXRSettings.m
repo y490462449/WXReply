@@ -229,6 +229,12 @@ typedef NS_ENUM(NSInteger, WXRRowKind) {
                                          text:[WXRGroupMonitor diagnosticText]];
     };
     [monitor addObject:monitorDiagRow];
+    WXRRow *nameDiagRow = [WXRRow row:@"名字解析诊断（群名/昵称）" kind:WXRRowKindAction key:nil];
+    nameDiagRow.action = ^{
+        [WXRSettings presentTextPageWithTitle:@"名字解析诊断"
+                                         text:[WXRGroupMonitor nameResolutionDiagnostic]];
+    };
+    [monitor addObject:nameDiagRow];
     WXRRow *hitsRow = [WXRRow row:@"查看最近命中" kind:WXRRowKindAction key:nil];
     hitsRow.action = ^{
         [WXRSettings presentTextPageWithTitle:@"群关键词命中记录"

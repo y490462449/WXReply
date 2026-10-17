@@ -7,6 +7,8 @@
 
 static NSMutableSet<NSString *> *gSeen = nil;      // 去重：群名 + 本地消息 id
 static NSString *gLastHit = nil;                   // 最近一次命中的记录文本
+static NSString *gLastGroupSession = nil;          // 最近一条群消息的群 id（诊断用）
+static NSString *gLastSenderId = nil;              // 最近一条群消息的发送者 id（诊断用）
 static NSInteger gHitCount = 0;
 #define WXR_MONITOR_MAX_RECORDS 300
 
@@ -148,6 +150,8 @@ static NSInteger gHitCount = 0;
             [gSeen removeAllObjects];
         }
     }
+    gLastGroupSession = [session copy];
+    gLastSenderId = [senderId copy];
     NSString *hit = [self matchedKeywordIn:content];
     if (!hit.length) {
         WXRLogVerbose(@"[monitor] 群消息未命中：群=%@ 发送者=%@ 内容=%@",
@@ -238,6 +242,25 @@ static NSInteger gHitCount = 0;
     [text appendString:@"\n最近一次命中：\n"];
     [text appendString:gLastHit.length ? gLastHit : @"（还没有命中过）"];
     [text appendString:@"\n\n提示：命中时日志里会有 [monitor] 开头的行；打开「详细日志」还能看到每条群消息是否命中。"];
+    return text;
+}
+
+/// 名字解析诊断（只读）：把这段发回给维护者，就能把群名/昵称补全
++ (NSString *)nameResolutionDiagnostic {
+    NSMutableString *text = [NSMutableString string];
+    [text appendFormat:@"最近一条群消息：\n  群 = %@\n  发送者 = %@\n\n",
+     gLastGroupSession ?: @"(还没收到过群消息)", gLastSenderId ?: @"(无)"];
+    [text appendString:[WXRWeChat describeContactForUser:gLastGroupSession]];
+    [text appendString:@"\n"];
+    [text appendString:[WXRWeChat describeContactForUser:gLastSenderId]];
+    [text appendString:@"\n===== 候选方法 =====\n"];
+    [text appendString:[WXRWeChat methodNamesOfClass:@"CContactMgr" containing:@"contact"]];
+    [text appendString:@"\n"];
+    [text appendString:[WXRWeChat methodNamesOfClass:@"CContactMgr" containing:@"name"]];
+    [text appendString:@"\n"];
+    [text appendString:[WXRWeChat methodNamesOfClass:@"CGroupMgr" containing:@"group"]];
+    [text appendString:@"\n"];
+    [text appendString:[WXRWeChat methodNamesOfClass:@"CGroupMgr" containing:@"name"]];
     return text;
 }
 

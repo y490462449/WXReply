@@ -27,6 +27,10 @@ typedef void (^WXRMessageHandler)(id wrap);
 + (NSString *)selfDisplayName;
 /// 群名/好友备注/昵称解析（群 ID 传 @chatroom 会返回群名称）；查不到返回 nil
 + (NSString *)displayNameForUser:(NSString *)userName;
+/// 只读诊断：某个微信号的 CContact 解析过程与真实字段（把结果发回给维护者）
++ (NSString *)describeContactForUser:(NSString *)userName;
+/// 只读诊断：列出某个类里名字包含关键字的实例方法
++ (NSString *)methodNamesOfClass:(NSString *)className containing:(NSString *)keyword;
 
 /* ---------- CMessageWrap 字段读取（字段名按版本候选） ---------- */
 + (NSString *)contentOfWrap:(id)wrap;

@@ -426,6 +426,12 @@ static NSString *WXRStringValue(id value) {
 }
 
 + (NSString *)actualSenderOfWrap:(id)wrap {
+    // ① 最可靠：m_nsRealChatUsr —— 群消息里它就是真实发送者的 wxid
+    //    （私聊消息这个字段为空，所以会继续往下走 from）
+    NSString *realChatUsr = WXRStringValue(WXRValueAny(wrap, @[@"m_nsRealChatUsr", @"m_nsRealChatUser"]));
+    if (realChatUsr.length) {
+        return realChatUsr;
+    }
     NSString *from = [self fromOfWrap:wrap];
     NSString *source = [self msgSourceOfWrap:wrap];
     if (source.length) {
@@ -437,7 +443,7 @@ static NSString *WXRStringValue(id value) {
             NSTextCheckingResult *m = [rx firstMatchInString:source options:0 range:NSMakeRange(0, source.length)];
             if (m && m.numberOfRanges > 1) {
                 NSString *found = [source substringWithRange:[m rangeAtIndex:1]];
-                if (found.length && ![found isEqualToString:[self selfUserName]]) {
+                if (found.length) {
                     return found;
                 }
             }
@@ -869,6 +875,52 @@ static id gLastAttemptWrap = nil;          // 上一次用的 wrap（留着回�
            gLastAttemptInserted ? @"成功" : @"没成功");
     gSendAttemptIndex = index;
     return YES;
+}
+
+/* ---------------- 名字解析诊断（只读，用来确认真实字段/方法名） ---------------- */
+
++ (NSString *)describeContactForUser:(NSString *)userName {
+    NSMutableString *text = [NSMutableString string];
+    [text appendFormat:@"查「%@」\n", userName.length ? userName : @"(空)"];
+    id manager = [self contactManager];
+    [text appendFormat:@"  contactManager = %@\n",
+     manager ? NSStringFromClass(object_getClass(manager)) : @"nil"];
+    if (!manager || !userName.length) {
+        return text;
+    }
+    Class contactClass = objc_getClass("CContactMgr");
+    for (NSString *selector in @[@"getContactByName:", @"getContact:", @"contactWithUsername:"]) {
+        BOOL exists = contactClass && class_getInstanceMethod(contactClass, NSSelectorFromString(selector)) != NULL;
+        [text appendFormat:@"  %@ %@\n", selector, exists ? @"存在" : @"不存在"];
+        NSInteger arity = (NSInteger)[[selector componentsSeparatedByString:@":"] count] - 1;
+        if (!exists || arity != 1) {
+            continue;
+        }
+        id contact = WXRCall1(manager, selector, userName);
+        [text appendFormat:@"    → %@\n", contact ? [self describeObject:contact maxLength:1500] : @"nil"];
+        if (contact) {
+            break;
+        }
+    }
+    return text;
+}
+
++ (NSString *)methodNamesOfClass:(NSString *)className containing:(NSString *)keyword {
+    Class cls = objc_getClass(className.UTF8String);
+    if (!cls) {
+        return [NSString stringWithFormat:@"%@：类不存在", className];
+    }
+    NSMutableArray<NSString *> *matched = [NSMutableArray array];
+    for (NSString *selector in WXRSelectorsOfClass(cls)) {
+        if (keyword.length &&
+            [selector rangeOfString:keyword options:NSCaseInsensitiveSearch].location == NSNotFound) {
+            continue;
+        }
+        [matched addObject:selector];
+    }
+    [matched sortUsingSelector:@selector(compare:)];
+    return [NSString stringWithFormat:@"%@（%lu 个）：%@", className, (unsigned long)matched.count,
+            [matched componentsJoinedByString:@", "]];
 }
 
 + (BOOL)sendText:(NSString *)text toSession:(NSString *)session {
