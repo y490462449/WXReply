@@ -386,6 +386,14 @@ static id WXRReadIvarObject(id object, NSString *name) {
 static id WXRContactValue(id object, NSArray<NSString *> *keys) {
     for (NSString *key in keys) {
         id value = WXRReadIvarObject(object, key);
+        if ([value isKindOfClass:[NSString class]]) {
+            // 关键：空字符串不是 nil！不能因为它"有值"就返回，
+            // 否则 m_nsRemark 是空串时会把后面真正的 m_nsNickName 挡掉。
+            if ([(NSString *)value length]) {
+                return value;
+            }
+            continue;
+        }
         if (value) {
             return value;
         }
