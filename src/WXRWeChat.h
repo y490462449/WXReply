@@ -31,6 +31,8 @@ typedef void (^WXRMessageHandler)(id wrap);
 + (NSString *)describeContactForUser:(NSString *)userName;
 /// 只读诊断：列出某个类里名字包含关键字的实例方法
 + (NSString *)methodNamesOfClass:(NSString *)className containing:(NSString *)keyword;
+/// 只读诊断：列出对象上所有"非空字符串"字段（名字字段一般都能在这里看到）
++ (NSString *)nonEmptyStringFieldsOfObject:(id)object maxLength:(NSUInteger)maxLength;
 
 /* ---------- CMessageWrap 字段读取（字段名按版本候选） ---------- */
 + (NSString *)contentOfWrap:(id)wrap;
