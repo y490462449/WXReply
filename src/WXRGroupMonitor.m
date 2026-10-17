@@ -87,10 +87,24 @@ static NSInteger gHitCount = 0;
     return out;
 }
 
+// 匹配前把空白都去掉：消息里常见「苹果 14pro Max」这种写法，
+// 关键词「苹果14」也应该命中（大小写也统一成小写）。
++ (NSString *)normalizedForMatch:(NSString *)text {
+    if (!text.length) {
+        return @"";
+    }
+    NSArray<NSString *> *parts =
+        [text.lowercaseString componentsSeparatedByCharactersInSet:
+         [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *joined = [parts componentsJoinedByString:@""];
+    return [joined stringByReplacingOccurrencesOfString:@"　" withString:@""];
+}
+
 + (NSString *)matchedKeywordIn:(NSString *)content {
-    NSString *lower = content.lowercaseString;
+    NSString *normalized = [self normalizedForMatch:content];
     for (NSString *word in [self keywords]) {
-        if ([lower rangeOfString:word.lowercaseString].location != NSNotFound) {
+        NSString *key = [self normalizedForMatch:word];
+        if (key.length && [normalized rangeOfString:key].location != NSNotFound) {
             return word;
         }
     }
@@ -179,15 +193,31 @@ static NSInteger gHitCount = 0;
             }
         }
         NSString *groupName = [self cachedNameForUser:session];
-        if ((!groupName.length || !senderName.length) && attempt < 3) {
-            WXRLogVerbose(@"[monitor] 名字还没解析出来（第 %ld 次尝试），300ms 后重试",
-                          (long)attempt + 1);
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+        // 微信刚启动时通讯录服务可能几十秒才就绪：先退避重试几次（总共约 5 秒）
+        if ((!groupName.length || !senderName.length) && attempt < 5) {
+            double delay = 0.3 * (double)(1 << attempt);      // 0.3 / 0.6 / 1.2 / 2.4
+            WXRLogVerbose(@"[monitor] 名字还没解析出来（第 %ld 次尝试），%.1fs 后重试",
+                          (long)attempt + 1, delay);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
                 [self deliverReminderForSession:session senderId:senderId content:content
                                             hit:hit wrap:wrap attempt:attempt + 1];
             });
             return;
+        }
+        // 仍然解析不到：这次就先用 ID 发出去，但把名字缓存偷偷预热，
+        // 这样后面几条提醒就能显示群名/昵称了
+        if (!groupName.length) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                [self cachedNameForUser:session];
+            });
+        }
+        if (!senderName.length) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                [self cachedNameForUser:senderId];
+            });
         }
         if (!senderName.length) {
             senderName = senderId ?: @"?";
