@@ -313,6 +313,10 @@ static NSInteger gHitCount = 0;
     NSMutableString *text = [NSMutableString string];
     [text appendFormat:@"最近一条群消息：\n  群 = %@\n  发送者 = %@\n\n",
      gLastGroupSession ?: @"(还没收到过群消息)", gLastSenderId ?: @"(无)"];
+    // 直接用插件自己的解析逻辑算一遍：这里显示的名字，就是提醒里会用的名字
+    [text appendFormat:@"解析结果（提醒里就显示这个）：\n  群 → %@\n  发送者 → %@\n\n",
+     [WXRWeChat displayNameForUser:gLastGroupSession] ?: @"(未解析)",
+     [WXRWeChat displayNameForUser:gLastSenderId] ?: @"(未解析)"];
     [text appendString:[WXRWeChat describeContactForUser:gLastGroupSession]];
     [text appendString:@"\n"];
     [text appendString:[WXRWeChat describeContactForUser:gLastSenderId]];
