@@ -44,8 +44,12 @@ typedef void (^WXRMessageHandler)(id wrap);
 + (BOOL)sendText:(NSString *)text toSession:(NSString *)session;
 /// 依次试遍所有"出站插入"方式，每种等 3 秒看有没有上传成功回调；成功就记住
 + (void)tryAllSendAttemptsForSession:(NSString *)session text:(NSString *)text;
-/// 只读普查：列出所有名字含 Sync/Send/Upload/Post 的类及其发送/上传类方法（不打任何钩子）
-+ (NSString *)sendPathSurvey;
+/// 消息的本地 id（读会话历史时用）
++ (NSInteger)localIDOfWrap:(id)wrap;
+/// 读会话历史（给 AI 当上下文）：从 endingAtLocalID 往前逐条读，返回 正文/发送者/是否自己 的字典
++ (NSArray<NSDictionary *> *)historyForSession:(NSString *)session
+                                 endingAtLocalID:(NSInteger)localID
+                                           limit:(NSInteger)limit;
 
 /* ---------- 收消息管线 ---------- */
 + (void)addMessageHandler:(WXRMessageHandler)handler;

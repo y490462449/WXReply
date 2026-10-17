@@ -197,11 +197,13 @@ typedef NS_ENUM(NSInteger, WXRRowKind) {
     WXRRow *maxLen = [WXRRow row:@"回复最大字数" kind:WXRRowKindNumber key:WXRKeyAIMaxLength];
     maxLen.detail = [NSString stringWithFormat:@"%ld", (long)[prefs integerForKey:WXRKeyAIMaxLength]];
     [ai addObject:maxLen];
-    WXRRow *temp = [WXRRow row:@"温度" kind:WXRRowKindNumber key:WXRKeyAITemperature];
-    temp.detail = [NSString stringWithFormat:@"%.1f", [prefs doubleForKey:WXRKeyAITemperature]];
+    WXRRow *temp = [WXRRow row:@"温度（AI 随机性，0~2）" kind:WXRRowKindNumber key:WXRKeyAITemperature];
+    temp.detail = [NSString stringWithFormat:@"%.1f（越大越发散，0.7 合适）",
+                   [prefs doubleForKey:WXRKeyAITemperature]];
     [ai addObject:temp];
-    WXRRow *ctx = [WXRRow row:@"带入上下文条数" kind:WXRRowKindNumber key:WXRKeyAIContextMessages];
-    ctx.detail = [NSString stringWithFormat:@"%ld", (long)[prefs integerForKey:WXRKeyAIContextMessages]];
+    WXRRow *ctx = [WXRRow row:@"带入上下文条数（读取会话历史）" kind:WXRRowKindNumber key:WXRKeyAIContextMessages];
+    ctx.detail = [NSString stringWithFormat:@"%ld 条（回复前读最近几条真实消息）",
+                  (long)[prefs integerForKey:WXRKeyAIContextMessages]];
     [ai addObject:ctx];
     WXRRow *test = [WXRRow row:@"测试 AI 连接" kind:WXRRowKindAction key:nil];
     __weak typeof(self) weakSelf = self;
@@ -214,13 +216,6 @@ typedef NS_ENUM(NSInteger, WXRRowKind) {
     WXRRow *status = [WXRRow row:@"运行状态" kind:WXRRowKindInfo key:nil];
     status.detail = [NSString stringWithFormat:@"%@ ｜ %@", [WXRAutoReply statusLine], [WXRSendProbe summary]];
     [diag addObject:status];
-    WXRRow *surveyRow = [WXRRow row:@"发送路径普查（只读）" kind:WXRRowKindAction key:nil];
-    surveyRow.action = ^{
-        WXRLog(@"[settings] 开始发送路径普查（只读，不打钩子）");
-        [WXRSettings presentTextPageWithTitle:@"发送路径普查"
-                                         text:[WXRWeChat sendPathSurvey]];
-    };
-    [diag addObject:surveyRow];
     WXRRow *tryAllRow = [WXRRow row:@"试遍所有发送方式（每个 3 秒）" kind:WXRRowKindAction key:nil];
     tryAllRow.action = ^{
         NSString *session = [WXRAutoReply lastPrivateSession];

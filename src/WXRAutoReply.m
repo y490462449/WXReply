@@ -132,7 +132,9 @@ static NSString *gLastPrivateSession = nil;
         && [prefs stringForKey:WXRKeyAIModel].length;
 
     if (useAI) {
-        [self requestAIReplyForSession:session text:content completion:^(NSString *reply, NSString *error) {
+        NSInteger localID = [WXRWeChat localIDOfWrap:wrap];
+        [self requestAIReplyForSession:session text:content endingAtLocalID:localID
+                             completion:^(NSString *reply, NSString *error) {
             @synchronized (gPending) {
                 [gPending removeObject:session];
             }
@@ -286,6 +288,7 @@ static NSString *gLastPrivateSession = nil;
 
 + (void)requestAIReplyForSession:(NSString *)session
                             text:(NSString *)text
+                 endingAtLocalID:(NSInteger)localID
                       completion:(void (^)(NSString *reply, NSString *error))completion {
     WXRPrefs *prefs = [WXRPrefs shared];
     NSURL *url = [self endpointURL];
@@ -302,7 +305,16 @@ static NSString *gLastPrivateSession = nil;
         [messages addObject:@{@"role": @"system", @"content": systemPrompt}];
     }
     NSInteger contextCount = MAX(1, MIN(30, [prefs integerForKey:WXRKeyAIContextMessages]));
-    for (NSDictionary *item in [self recentForSession:session limit:contextCount]) {
+    // 优先用"真实会话历史"（直接从消息库读，含插件启动前的消息）；读不到再退回内存里看到的记录
+    NSArray<NSDictionary *> *historyItems = nil;
+    if (localID > 1) {
+        historyItems = [WXRWeChat historyForSession:session endingAtLocalID:localID limit:contextCount];
+    }
+    NSInteger fromDB = (NSInteger)historyItems.count;
+    if (!fromDB) {
+        historyItems = [self recentForSession:session limit:contextCount];
+    }
+    for (NSDictionary *item in historyItems) {
         NSString *content = item[@"content"];
         if (!content.length || [content hasPrefix:@"<"]) {
             continue;
@@ -334,7 +346,8 @@ static NSString *gLastPrivateSession = nil;
     [request setValue:[@"Bearer " stringByAppendingString:key] forHTTPHeaderField:@"Authorization"];
     request.HTTPBody = payload;
 
-    WXRLog(@"[reply] POST %@ model=%@ 上下文=%lu 条", url.absoluteString, model, (unsigned long)messages.count);
+    WXRLog(@"[reply] POST %@ model=%@ 上下文=%lu 条（其中会话历史 %ld 条）", url.absoluteString, model,
+           (unsigned long)messages.count, (long)fromDB);
 
     [[[NSURLSession sharedSession] dataTaskWithRequest:request
                                     completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {

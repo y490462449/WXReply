@@ -631,56 +631,94 @@ typedef NS_ENUM(NSInteger, WXRSendShape) {
     WXRSendShapeSessionWrapNotify,     // (会话名, wrap, fixTime=NO, NewMsgArriveNotify=YES)
 };
 
-// 只读普查：找出"入库之后到底谁负责上传"。纯枚举、不打钩子，所以没有任何崩溃风险。
-+ (NSString *)sendPathSurvey {
-    unsigned int classCount = 0;
-    Class *classes = objc_copyClassList(&classCount);
-    if (!classes) {
-        return @"（objc_copyClassList 失败）";
+/* ---------------- 读取会话历史（给 AI 当上下文） ---------------- */
+
++ (NSInteger)localIDOfWrap:(id)wrap {
+    id value = WXRValueAny(wrap, @[@"m_uiMesLocalID", @"m_nMesLocalID", @"m_uiMesLocalId"]);
+    return [value respondsToSelector:@selector(integerValue)] ? [value integerValue] : 0;
+}
+
+// 用 GetMsg:LocalID: 从当前消息往前逐条读。
+// 参数类型各版本可能不同：按运行时签名决定传对象还是传整数，整体 @try 兜住。
++ (id)messageAtSession:(NSString *)session localID:(NSInteger)localID manager:(id)manager {
+    if (!session.length || localID <= 0 || !manager) {
+        return nil;
     }
-    NSMutableString *out = [NSMutableString string];
-    NSInteger matchedClasses = 0;
-    NSInteger matchedMethods = 0;
-    for (unsigned int i = 0; i < classCount; i++) {
-        Class cls = classes[i];
-        NSString *name = NSStringFromClass(cls);
-        if (!name.length) {
+    for (NSString *selector in @[@"GetMsg:LocalID:", @"GetMsg:LocalID:hasError:needOriginContent:"]) {
+        SEL sel = NSSelectorFromString(selector);
+        NSMethodSignature *signature = nil;
+        @try {
+            signature = [manager methodSignatureForSelector:sel];
+        } @catch (NSException *e) {
+            signature = nil;
+        }
+        if (!signature || signature.numberOfArguments != 4) {   // self + _cmd + 两个参数
             continue;
         }
-        if (!([name containsString:@"Sync"] || [name containsString:@"Send"] ||
-              [name containsString:@"Upload"] || [name containsString:@"Post"])) {
+        const char *returnType = signature.methodReturnType;
+        const char *firstType = [signature getArgumentTypeAtIndex:2];
+        const char *secondType = [signature getArgumentTypeAtIndex:3];
+        if (!returnType || returnType[0] != '@' || !firstType || firstType[0] != '@' || !secondType) {
             continue;
         }
-        NSMutableArray<NSString *> *methods = [NSMutableArray array];
-        for (NSString *selector in WXRSelectorsOfClass(cls)) {
-            NSString *lower = selector.lowercaseString;
-            if (!([lower containsString:@"send"] || [lower containsString:@"upload"] ||
-                  [lower containsString:@"post"] || [lower containsString:@"push"] ||
-                  [lower containsString:@"submit"])) {
+        @try {
+            IMP imp = [manager methodForSelector:sel];
+            if (!imp) {
                 continue;
             }
-            NSMethodSignature *signature = [cls instanceMethodSignatureForSelector:NSSelectorFromString(selector)];
-            NSMutableString *types = [NSMutableString string];
-            if (signature) {
-                for (NSUInteger a = 0; a < signature.numberOfArguments; a++) {
-                    const char *type = [signature getArgumentTypeAtIndex:a];
-                    [types appendFormat:@"%s", type ? type : "?"];
+            if (secondType[0] == '@') {
+                id result = ((id (*)(id, SEL, id, id))imp)(manager, sel, session, @(localID));
+                if (result) {
+                    return result;
+                }
+            } else if (secondType[0] == 'q' || secondType[0] == 'Q' || secondType[0] == 'l') {
+                id result = ((id (*)(id, SEL, id, long long))imp)(manager, sel, session, (long long)localID);
+                if (result) {
+                    return result;
+                }
+            } else if (secondType[0] == 'i' || secondType[0] == 'I') {
+                id result = ((id (*)(id, SEL, id, int))imp)(manager, sel, session, (int)localID);
+                if (result) {
+                    return result;
                 }
             }
-            [methods addObject:[NSString stringWithFormat:@"- %@ [%@]", selector, types]];
-        }
-        if (!methods.count) {
-            continue;
-        }
-        matchedClasses++;
-        matchedMethods += (NSInteger)methods.count;
-        if (out.length < 8000) {
-            [out appendFormat:@"\n== %@\n  %@\n", name, [methods componentsJoinedByString:@"\n  "]];
+        } @catch (NSException *e) {
+            WXRLogVerbose(@"[history] %@ 调用异常：%@", selector, e.reason);
         }
     }
-    free(classes);
-    return [NSString stringWithFormat:@"扫描 %u 个类：命中 %ld 个「发送/同步/上传」相关类、%ld 个方法。\n%@",
-            classCount, (long)matchedClasses, (long)matchedMethods, out];
+    return nil;
+}
+
++ (NSArray<NSDictionary *> *)historyForSession:(NSString *)session
+                                 endingAtLocalID:(NSInteger)localID
+                                           limit:(NSInteger)limit {
+    if (!session.length || localID <= 1 || limit <= 0) {
+        return @[];
+    }
+    id manager = [self messageManager];
+    if (!manager) {
+        return @[];
+    }
+    NSInteger want = MIN(limit, 30);
+    NSMutableArray<NSDictionary *> *out = [NSMutableArray array];
+    NSInteger lowest = MAX(1, localID - want * 4);      // 中间可能有空洞/已删除，多扫一些
+    for (NSInteger lid = localID - 1; lid >= lowest && (NSInteger)out.count < want; lid--) {
+        id wrap = [self messageAtSession:session localID:lid manager:manager];
+        if (!wrap) {
+            continue;
+        }
+        NSString *content = [self contentOfWrap:wrap];
+        if (!content.length) {
+            continue;        // 图片/语音等没有正文的先跳过，不塞给 AI
+        }
+        NSString *from = [self fromOfWrap:wrap];
+        NSString *selfName = [self selfUserName];
+        BOOL outgoing = from.length && selfName.length && [from isEqualToString:selfName];
+        [out insertObject:@{@"content": content,
+                            @"from": from ?: @"",
+                            @"outgoing": @(outgoing)} atIndex:0];
+    }
+    return out;
 }
 
 // 出站消息可以试的几种调用方式。参数形状都按各方法真实的类型编码来（都是对象或 BOOL，ABI 安全）。
