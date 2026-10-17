@@ -359,6 +359,28 @@ static id gObservedMessageManager = nil;
     return b.selfDisplayName ?: @"";
 }
 
+// 群名/好友名字解析：备注优先，其次群名/昵称/别名；查不到返回 nil
++ (NSString *)displayNameForUser:(NSString *)userName {
+    if (!userName.length) {
+        return nil;
+    }
+    id manager = [self contactManager];
+    if (!manager) {
+        return nil;
+    }
+    id contact = WXRCall1(manager, @"getContactByName", userName);
+    if (!contact) {
+        return nil;
+    }
+    for (NSString *key in @[@"m_nsRemark", @"m_nsNickName", @"m_nsAliasName", @"m_nsDisplayName"]) {
+        id value = WXRValueAny(contact, @[key]);
+        if ([value isKindOfClass:[NSString class]] && [(NSString *)value length]) {
+            return (NSString *)value;
+        }
+    }
+    return nil;
+}
+
 /* ---------------- CMessageWrap 读取 ---------------- */
 
 static NSString *WXRStringValue(id value) {

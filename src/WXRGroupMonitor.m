@@ -129,8 +129,12 @@ static NSInteger gHitCount = 0;
         return;
     }
     NSString *sender = [WXRWeChat fromOfWrap:wrap];
+    NSString *senderId = [WXRWeChat actualSenderOfWrap:wrap];
+    if (!senderId.length) {
+        senderId = sender;      // 取不到真实发送者时的兜底
+    }
     NSString *selfName = [WXRWeChat selfUserName];
-    if (selfName.length && [sender isEqualToString:selfName]) {
+    if (selfName.length && [senderId isEqualToString:selfName]) {
         return;      // 自己发的（比如我们转发出去的那条）不算
     }
     NSInteger localID = [WXRWeChat localIDOfWrap:wrap];
@@ -149,11 +153,26 @@ static NSInteger gHitCount = 0;
         return;
     }
 
-    id pushTitle = WXRValueAny(wrap, @[@"m_nsPushTitle", @"m_nsDisplayName"]);
-    NSString *senderName = [pushTitle isKindOfClass:[NSString class]] && [pushTitle length]
-        ? (NSString *)pushTitle : (sender ?: @"?");
+    // 名字解析：群名 + 发送者昵称；解析不到就退回 ID，保证信息不丢
+    NSString *senderName = [WXRWeChat displayNameForUser:senderId];
+    if (!senderName.length) {
+        id pushTitle = WXRValueAny(wrap, @[@"m_nsPushTitle", @"m_nsDisplayName"]);
+        if ([pushTitle isKindOfClass:[NSString class]] && [pushTitle length]) {
+            senderName = (NSString *)pushTitle;
+        }
+    }
+    if (!senderName.length) {
+        senderName = senderId ?: @"?";
+    }
+    NSString *groupName = [WXRWeChat displayNameForUser:session];
+    NSString *groupText = groupName.length
+        ? [NSString stringWithFormat:@"%@（%@）", groupName, session]
+        : (session ?: @"?");
+    NSString *senderText = (senderId.length && ![senderName isEqualToString:senderId])
+        ? [NSString stringWithFormat:@"%@（%@）", senderName, senderId]
+        : (senderName ?: @"?");
     NSString *line = [NSString stringWithFormat:@"%@ 群=%@ 发送者=%@ 关键词=%@ 内容=%@",
-                      [self timestampText], session ?: @"?", senderName, hit, content];
+                      [self timestampText], groupText, senderText, hit, content];
     gLastHit = line;
     gHitCount++;
     WXRLog(@"[monitor] 命中关键词「%@」：%@", hit, line);
@@ -166,7 +185,7 @@ static NSInteger gHitCount = 0;
         NSString *shortContent = content.length > 400 ? [content substringToIndex:400] : content;
         NSString *text = [NSString stringWithFormat:
                           @"【群关键词提醒】\n群：%@\n发送者：%@\n关键词：%@\n时间：%@\n内容：%@",
-                          session ?: @"?", senderName, hit, [self timestampText], shortContent];
+                          groupText, senderText, hit, [self timestampText], shortContent];
         BOOL sent = [WXRWeChat sendText:text toSession:selfName];
         WXRLog(@"[monitor] 转发给自己：%@", sent ? @"已调用发送" : @"没有可用的发送接口");
     }

@@ -25,6 +25,8 @@ typedef void (^WXRMessageHandler)(id wrap);
 + (id)selfContact;
 + (NSString *)selfUserName;
 + (NSString *)selfDisplayName;
+/// 群名/好友备注/昵称解析（群 ID 传 @chatroom 会返回群名称）；查不到返回 nil
++ (NSString *)displayNameForUser:(NSString *)userName;
 
 /* ---------- CMessageWrap 字段读取（字段名按版本候选） ---------- */
 + (NSString *)contentOfWrap:(id)wrap;
