@@ -410,12 +410,12 @@ static id WXRContactValue(id object, NSArray<NSString *> *keys) {
     if (!manager) {
         return nil;
     }
-    id contact = WXRCall1(manager, @"getContactByName", userName);
+    id contact = WXRCall1(manager, @"getContactByName:", userName);
     if (!contact) {
-        contact = WXRCall1(manager, @"getContactByNameFromCache", userName);
+        contact = WXRCall1(manager, @"getContactByNameFromCache:", userName);
     }
     if (!contact) {
-        contact = WXRCall1(manager, @"getContactByNameFromDB", userName);
+        contact = WXRCall1(manager, @"getContactByNameFromDB:", userName);
     }
     if (!contact) {
         return nil;

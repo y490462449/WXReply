@@ -682,6 +682,25 @@ def forward_use_issues(path, code):
             break
     return issues
 
+
+def selector_arity_issues(path, raw):
+    """WXRCall1/2/3 的 selector 冒号个数必须等于传参个数，否则实际调到的是另一个 selector。
+    注意：这里要用原始文本 —— strip_comments_and_strings 会把字符串字面量清掉。"""
+    issues = []
+    for i, line in enumerate(raw.split("\n"), 1):
+        head = line.lstrip()
+        if head.startswith("//") or head.startswith("*") or head.startswith("/*"):
+            continue
+        for match in re.finditer(r'\bWXRCall([123]?)\(\s*([A-Za-z_][\w\.\[\]]*)\s*,\s*@"([^"]*)"', line):
+            argc = 0 if match.group(1) == "" else int(match.group(1))
+            sel = match.group(3)
+            colons = sel.count(":")
+            if colons != argc:
+                issues.append(
+                    f'{path.name}:{i} WXRCall{argc or ""}(…, @"{sel}") 的冒号数({colons})'
+                    f"与参数个数({argc})不一致（会调到另一个 selector）")
+    return issues
+
 def main():
     root = resolve_root(sys.argv[1] if len(sys.argv) > 1 else r"E:\DEB\WXRit")
     src = root / "src"
@@ -744,6 +763,7 @@ def main():
 
     for path in sources:
         issues += forward_use_issues(path, codes[path])
+        issues += selector_arity_issues(path, texts[path])
 
     declared_c_functions = set()
     for path in headers:

@@ -232,7 +232,7 @@ static NSInteger gHitCount = 0;
                session ?: @"?", groupName ?: @"(未解析)", senderId ?: @"?", senderName ?: @"(未解析)");
         if (!groupName.length) {
             id manager = [WXRWeChat contactManager];
-            id contact = manager ? WXRCall1(manager, @"getContactByName", session) : nil;
+            id contact = manager ? WXRCall1(manager, @"getContactByName:", session) : nil;
             WXRLog(@"[monitor] 群名解析失败原因：contactManager=%@，getContactByName=%@，群=%@",
                    manager ? @"有" : @"nil", contact ? @"有" : @"nil", session ?: @"?");
         }
