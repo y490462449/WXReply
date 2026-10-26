@@ -311,6 +311,9 @@ static NSInteger gHitCount = 0;
 /// 名字解析诊断（只读）：把这段发回给维护者，就能把群名/昵称补全
 + (NSString *)nameResolutionDiagnostic {
     NSMutableString *text = [NSMutableString string];
+    [text appendString:@"===== 服务获取诊断 =====\n"];
+    [text appendString:[WXRWeChat serviceDiagnosticText]];
+    [text appendString:@"\n===== 名字解析 =====\n"];
     [text appendFormat:@"最近一条群消息：\n  群 = %@\n  发送者 = %@\n\n",
      gLastGroupSession ?: @"(还没收到过群消息)", gLastSenderId ?: @"(无)"];
     // 直接用插件自己的解析逻辑算一遍：这里显示的名字，就是提醒里会用的名字

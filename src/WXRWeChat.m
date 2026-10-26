@@ -1073,6 +1073,54 @@ static id gLastAttemptWrap = nil;          // 上一次用的 wrap（留着回�
             [matched componentsJoinedByString:@", "]];
 }
 
++ (NSString *)serviceDiagnosticText {
+    NSMutableString *text = [NSMutableString string];
+    [text appendFormat:@"微信版本：%@\n",
+     [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"?"];
+    [text appendString:@"服务中心候选：\n"];
+    for (NSString *clsName in WXRServiceCenterClasses()) {
+        Class cls = objc_getClass(clsName.UTF8String);
+        BOOL any = NO;
+        for (NSString *sel in WXRServiceCenterSingletonSelectors()) {
+            if (!cls) {
+                [text appendFormat:@"  %@：类不存在\n", clsName];
+                break;
+            }
+            id center = WXRCallClass(clsName, sel);
+            [text appendFormat:@"  %@ -%@：%@\n", clsName, sel, center ? @"拿到" : @"nil"];
+            if (center) {
+                any = YES;
+                break;
+            }
+        }
+        (void)any;
+    }
+    [text appendFormat:@"\nserviceCenter 当前：%@\n",
+     [[self shared] serviceCenter] ? @"有" : @"nil"];
+
+    [text appendString:@"\n服务获取情况：\n"];
+    NSMutableArray<NSString *> *all = [NSMutableArray array];
+    [all addObjectsFromArray:WXRContactManagerClasses()];
+    [all addObjectsFromArray:WXRMessageManagerClasses()];
+    [all addObjectsFromArray:WXRGroupManagerClasses()];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    for (NSString *clsName in all) {
+        if ([seen containsObject:clsName]) {
+            continue;
+        }
+        [seen addObject:clsName];
+        Class cls = objc_getClass(clsName.UTF8String);
+        id service = cls ? [self serviceForClass:clsName] : nil;
+        [text appendFormat:@"  %@：类%@，服务%@\n", clsName,
+         cls ? @"存在" : @"不存在",
+         service ? NSStringFromClass(object_getClass(service)) : @"nil"];
+    }
+    [text appendFormat:@"\n消息服务实例：%@\n", [self messageManager] ? @"已获取" : @"nil"];
+    [text appendFormat:@"自己身份：%@\n", [self selfUserName] ?: @"未解析"];
+    [text appendFormat:@"收消息钩子：%@\n", [self messageHooksInstalled] ? @"已挂上" : @"未挂上"];
+    return text;
+}
+
 + (BOOL)sendText:(NSString *)text toSession:(NSString *)session {
     if (!text.length || !session.length) return NO;
     id manager = [self messageManager];

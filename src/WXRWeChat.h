@@ -29,6 +29,8 @@ typedef void (^WXRMessageHandler)(id wrap);
 + (NSString *)displayNameForUser:(NSString *)userName;
 /// 只读诊断：某个微信号的 CContact 解析过程与真实字段（把结果发回给维护者）
 + (NSString *)describeContactForUser:(NSString *)userName;
+/// 只读诊断：服务中心/服务获取全过程（contactManager 为 nil 时用它定位）
++ (NSString *)serviceDiagnosticText;
 /// 只读诊断：列出某个类里名字包含关键字的实例方法
 + (NSString *)methodNamesOfClass:(NSString *)className containing:(NSString *)keyword;
 /// 只读诊断：列出对象上所有"非空字符串"字段（名字字段一般都能在这里看到）
