@@ -13,6 +13,12 @@ typedef void (^WXRMessageHandler)(id wrap);
 
 /// 收消息回调的接收者就是真实的（没被包装的）消息服务实例，收到消息时记下来
 + (void)rememberMessageManager:(id)manager;
+/// 从别的对象（如代理）抓到的真实服务实例，记下来备用
++ (void)rememberContactManager:(id)manager;
+/// 抓到真实的服务总线实例就用它（有些版本 MMServiceCenter defaultCenter 返回 nil）
++ (void)adoptServiceCenter:(id)center;
+/// 装"抓服务实例"的钩子（只读捕获 + 照常放行）
++ (void)installServiceCaptureHooks;
 
 /// 列出某个类的实例方法名（含父类链）；类不存在时返回空数组
 + (NSArray<NSString *> *)selectorsOfClassNamed:(NSString *)className;

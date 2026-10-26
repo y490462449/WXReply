@@ -62,7 +62,7 @@ MUTATIONS = [
      'WXRCall1(manager, @"getContactByName", userName)'),
     ("C 函数先在定义之前被使用（真机编译错误）",
      "src/WXRWeChat.m",
-     "static NSString *WXRStringValue(id value);\n\n",
+     "static NSString *WXRStringValue(id value);\n",
      ""),
     ("用了别的文件的类却没 import（真机编译错误）",
      "src/WXRSettings.m",

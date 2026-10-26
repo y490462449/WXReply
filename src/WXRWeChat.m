@@ -126,12 +126,19 @@ static NSArray<NSString *> *WXRTimeKeys(void) {
     // 每次启动固定回它，避免残留的轮转指针继续去试别的（那些尝试只会多插气泡）。
     [[WXRPrefs shared] setInteger:0 forKey:WXRKeySendStrategy];
     WXRLog(@"[send] 发送方式固定为第 1 种：AddMsg:MsgWrap:（会话名, wrap）");
+    // 有些版本 MMServiceCenter defaultCenter 返回 nil，靠钩子抓真实实例兜底
+    [self installServiceCaptureHooks];
 }
 
 // 取 MMServiceCenter 单例。
 // 注意：微信启动早期这个单例还不存在，所以「取不到」绝不能缓存成永久失败，
 // 否则整个插件会一直拿不到服务；这里做 2 秒一次的限流重试。
 - (id)serviceCenter {
+    @synchronized ([WXRWeChat class]) {
+        if (gAdoptedServiceCenter) {
+            return gAdoptedServiceCenter;
+        }
+    }
     @synchronized (self.serviceCache) {
         id cached = self.serviceCache[@"__center"];
         if (cached && cached != [NSNull null]) {
@@ -183,8 +190,10 @@ static NSArray<NSString *> *WXRTimeKeys(void) {
     if (!selfContact) {
         return;
     }
-    self.selfUserName = WXRValueAny(selfContact, @[@"m_nsUsrName", @"m_nsUserName", @"userName", @"m_nsRemark"]);
-    self.selfDisplayName = WXRValueAny(selfContact, @[@"m_nsNickName", @"m_nsRemark", @"nickName"]) ?: self.selfUserName;
+    // CContact 禁用了 KVC（valueForKey: 一律抛异常），必须直读 ivar
+    self.selfUserName = WXRContactValue(selfContact, @[@"m_nsUsrName", @"m_nsUserName", @"userName"]);
+    self.selfDisplayName = WXRContactValue(selfContact, @[@"m_nsNickName", @"m_nsRemark", @"nickName"])
+        ?: self.selfUserName;
     WXRLog(@"[bridge] 自己 = %@(%@)", self.selfDisplayName ?: @"?", self.selfUserName ?: @"?");
 }
 
@@ -221,6 +230,8 @@ static id WXRUnwrapService(id service) {
 
 // 收消息回调的 self 就是真实消息服务实例（不经过代理），这是最可靠的获取方式
 static id gObservedMessageManager = nil;
+static id gObservedContactManager = nil;   // 从 CContactMgr 的调用里抓到的真实实例
+static id gAdoptedServiceCenter = nil;     // 从钩子里抓到的真实服务总线
 
 + (id)serviceForClass:(NSString *)className {
     WXRWeChat *b = [self shared];
@@ -267,6 +278,73 @@ static id gObservedMessageManager = nil;
     return WXRSelectorsOfClass(objc_getClass(className.UTF8String));
 }
 
++ (void)rememberContactManager:(id)manager {
+    if (!manager) {
+        return;
+    }
+    @synchronized ([self class]) {
+        if (gObservedContactManager != manager) {
+            gObservedContactManager = manager;
+            WXRLog(@"[bridge] 记下真实通讯录服务 = %@（来自钩子）",
+                   NSStringFromClass(object_getClass(manager)));
+        }
+    }
+}
+
++ (void)adoptServiceCenter:(id)center {
+    if (!center) {
+        return;
+    }
+    @synchronized ([self class]) {
+        if (gAdoptedServiceCenter != center) {
+            gAdoptedServiceCenter = center;
+            WXRLog(@"[bridge] 记下真实服务总线 = %@（来自钩子）",
+                   NSStringFromClass(object_getClass(center)));
+        }
+    }
+}
+
+// --- 抓真实服务实例的钩子（只捕获 + 照常放行） ---
+
+static id (*gOrigDefaultCenter)(id, SEL) = NULL;
+static id WXRProbeDefaultCenter(id self, SEL _cmd) {
+    id center = gOrigDefaultCenter ? gOrigDefaultCenter(self, _cmd) : nil;
+    if (center) {
+        [WXRWeChat adoptServiceCenter:center];
+    }
+    return center;
+}
+
+static id (*gOrigGetSelfContact)(id, SEL) = NULL;
+static id WXRProbeGetSelfContact(id self, SEL _cmd) {
+    [WXRWeChat rememberContactManager:self];
+    return gOrigGetSelfContact ? gOrigGetSelfContact(self, _cmd) : nil;
+}
+
+static id (*gOrigGetContactByName)(id, SEL, id) = NULL;
+static id WXRProbeGetContactByName(id self, SEL _cmd, id a1) {
+    [WXRWeChat rememberContactManager:self];
+    return gOrigGetContactByName ? gOrigGetContactByName(self, _cmd, a1) : nil;
+}
+
++ (void)installServiceCaptureHooks {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        // 服务总线（类方法）
+        [WXRHook hookClass:@"MMServiceCenter" selector:@"defaultCenter" isClassMethod:YES
+              replacement:(IMP)WXRProbeDefaultCenter original:(IMP *)&gOrigDefaultCenter
+                     note:@"抓服务总线实例"];
+        // 通讯录服务（实例方法）
+        [WXRHook hookClass:@"CContactMgr" selector:@"getSelfContact" isClassMethod:NO
+              replacement:(IMP)WXRProbeGetSelfContact original:(IMP *)&gOrigGetSelfContact
+                     note:@"抓通讯录服务实例"];
+        [WXRHook hookClass:@"CContactMgr" selector:@"getContactByName:" isClassMethod:NO
+              replacement:(IMP)WXRProbeGetContactByName original:(IMP *)&gOrigGetContactByName
+                     note:@"抓通讯录服务实例(按名字)"];
+        WXRLog(@"[bridge] 服务实例抓取钩子已安装（服务总线失效时的备用通道）");
+    });
+}
+
 + (void)rememberMessageManager:(id)manager {
     if (!manager) {
         return;
@@ -310,6 +388,11 @@ static id gObservedMessageManager = nil;
 }
 
 + (id)contactManager {
+    @synchronized ([self class]) {
+        if (gObservedContactManager) {
+            return gObservedContactManager;
+        }
+    }
     WXRWeChat *b = [self shared];
     @synchronized (b.serviceCache) {
         id cached = b.serviceCache[@"__contactManager"];
@@ -359,8 +442,9 @@ static id gObservedMessageManager = nil;
     return b.selfDisplayName ?: @"";
 }
 
-// C 函数必须先声明后使用（WXRStringValue 定义在下面，这里前向声明一下）
+// C 函数必须先声明后使用（定义在下面，这里前向声明）
 static NSString *WXRStringValue(id value);
+static id WXRContactValue(id object, NSArray<NSString *> *keys);
 
 // 微信的 CContact 禁用了 KVC 的直接 ivar 访问（valueForKey: 一律抛异常 → nil），
 // 但直接读 ivar 是好的，所以这里专门用 object_getIvar 读（含父类链）。
@@ -1115,6 +1199,13 @@ static id gLastAttemptWrap = nil;          // 上一次用的 wrap（留着回�
          cls ? @"存在" : @"不存在",
          service ? NSStringFromClass(object_getClass(service)) : @"nil"];
     }
+    [text appendFormat:@"\n钩子抓到的实例（备用通道）：\n"];
+    [text appendFormat:@"  服务总线：%@\n",
+     gAdoptedServiceCenter ? NSStringFromClass(object_getClass(gAdoptedServiceCenter)) : @"(还没抓到)"];
+    [text appendFormat:@"  通讯录服务：%@\n",
+     gObservedContactManager ? NSStringFromClass(object_getClass(gObservedContactManager)) : @"(还没抓到)"];
+    [text appendFormat:@"  消息服务：%@\n",
+     gObservedMessageManager ? NSStringFromClass(object_getClass(gObservedMessageManager)) : @"(还没抓到)"];
     [text appendFormat:@"\n消息服务实例：%@\n", [self messageManager] ? @"已获取" : @"nil"];
     [text appendFormat:@"自己身份：%@\n", [self selfUserName] ?: @"未解析"];
     [text appendFormat:@"收消息钩子：%@\n", [self messageHooksInstalled] ? @"已挂上" : @"未挂上"];
